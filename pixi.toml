@@ -1,36 +1,37 @@
 [workspace]
 authors = ["Dhimitrios Duka <dhimitrios.duka1@gmail.com>"]
-channels = ["conda-forge"]
+channels = ["nvidia", "conda-forge", "pytorch", "default"]
 name = "AVION"
 platforms = ["linux-64"]
 version = "0.1.0"
 
 [tasks]
-# Core build tasks
-clean = "cd ./third_party/decord && rm -rf build"
-compile-decord = "cd ./third_party/decord && rm -rf build && mkdir -p build && cd build && cmake .. -DUSE_CUDA=0 -DCMAKE_BUILD_TYPE=Release && make -j$(nproc)"
-install-python-bindings = { cmd = "cd ./third_party/decord/python && python setup.py install --user", depends-on = ["compile-decord"] }
-setup-python-path = "export PYTHONPATH=$PYTHONPATH:$PWD"
-check-installation = "python -c 'import decord, torch; print(f\"Decord: {decord.__path__}\"); print(f\"PyTorch: {torch.__version__}\")'"
-setup = { depends-on = ["install-python-bindings", "setup-python-path"] }
-rebuild = { depends-on = ["clean", "setup"] }
+compile-decord = """
+bash -c '
+    cd third_party/decord/
+    rm -rf build
+    mkdir build && cd build
+    cmake .. -DUSE_CUDA=0 -DCMAKE_BUILD_TYPE=Release
+    make
+    cd ../python
+    python3 setup.py install --user
+    PYTHONPATH=$PYTHONPATH:$PWD
+    python -c "import decord; print(decord.__path__)"
+'
+"""
 
 [dependencies]
-python = "3.10.*"
+python = "==3.10"
+pip = ">=25.2,<26"
+einops = "==0.6.0"
 ffmpeg = "4.*"
-pkg-config = "*"
-cmake = "*"
 make = "*"
-packaging = "*"
-
-[build-dependencies]
+cmake = "*"
 
 [pypi-dependencies]
 torch = "==1.13.1+cu117"
 torchvision = "==0.14.1+cu117"
 torchaudio = "==0.13.1+cu117"
-ninja = "==1.11.1"
-einops = "==0.6.0"
 kornia = "==0.6.10"
 pandas = "==1.5.3"
 pytorchvideo = "==0.1.5"
@@ -38,11 +39,9 @@ scikit-learn = "==1.2.2"
 submitit = "==1.4.5"
 timm = "==0.6.12"
 transformers = "==4.26.1"
-wandb = "*"
 flash-attn = "==0.2.8"
 clip = { git = "https://github.com/openai/CLIP.git" }
 
-
 [pypi-options]
 extra-index-urls = ["https://download.pytorch.org/whl/cu117"]
-no-build-isolation = ["flash-attn"] 
+no-build-isolation = ["flash-attn"]
