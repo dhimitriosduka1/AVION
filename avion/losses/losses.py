@@ -100,6 +100,9 @@ class ClipLoss(nn.Module):
         self.prev_num_logits = 0
         self.labels = {}
 
+        # just for debugging
+        self._debug = True
+
     def forward(self, image_features, text_features, logit_scale):
         device = image_features.device
         if self.world_size > 1:
@@ -124,6 +127,12 @@ class ClipLoss(nn.Module):
         else:
             logits_per_image = logit_scale * image_features @ text_features.T
             logits_per_text = logit_scale * text_features @ image_features.T
+
+        # just for debugging
+        if self._debug:
+            print("Logits per image shape:", logits_per_image.shape)
+            print("Logits per text:", logits_per_text.shape)
+            self._debug = False
 
         # calculated ground-truth and cache if enabled
         num_logits = logits_per_image.shape[0]
