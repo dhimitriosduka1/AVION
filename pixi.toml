@@ -44,6 +44,7 @@ transformers = "==4.26.1"
 flash-attn = "==0.2.8"
 clip = { git = "https://github.com/openai/CLIP.git" }
 black = ">=25.1.0, <26"
+numpy = "<2.0.0"
 
 [pypi-options]
 extra-index-urls = ["https://download.pytorch.org/whl/cu117"]

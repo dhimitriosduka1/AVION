@@ -157,7 +157,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/a3/73/555cafa4fb2f0eb3cb9de779bbe7cb120d36209268225d6acaf43ccec89d/kornia-0.6.10-py2.py3-none-any.whl
       - pypi: https://download.pytorch.org/whl/mypy_extensions-1.0.0-py3-none-any.whl
       - pypi: https://download.pytorch.org/whl/networkx-3.3-py3-none-any.whl
-      - pypi: https://download.pytorch.org/whl/numpy-2.1.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+      - pypi: https://download.pytorch.org/whl/numpy-1.26.3-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/49/e2/79e46612dc25ebc7603dc11c560baa7266c90f9e48537ecf1a02a0dd6bff/pandas-1.5.3-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/00/2f/804f58f0b856ab3bf21617cccf5b39206e6c4c94c2cd227bde125ea6105f/parameterized-0.9.0-py2.py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/cc/20/ff623b09d963f88bfde16306a54e12ee5ea43e9b597108672ff3a408aad6/pathspec-0.12.1-py3-none-any.whl
@@ -1556,11 +1556,11 @@ packages:
   - pytest>=7.2 ; extra == 'test'
   - pytest-cov>=4.0 ; extra == 'test'
   requires_python: '>=3.10'
-- pypi: https://download.pytorch.org/whl/numpy-2.1.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+- pypi: https://download.pytorch.org/whl/numpy-1.26.3-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
   name: numpy
-  version: 2.1.2
-  sha256: d666cb72687559689e9906197e3bec7b736764df6a2e58ee265e360663e9baf7
-  requires_python: '>=3.10'
+  version: 1.26.3
+  sha256: bdd2b45bf079d9ad90377048e2747a0c82351989a2165821f0c96831b4a2a54b
+  requires_python: '>=3.9'
 - conda: https://conda.anaconda.org/conda-forge/linux-64/openh264-2.3.1-hcb278e6_2.conda
   sha256: 3be6de15d40f02c9bb34d5095c65b6b3f07e04fc21a0fb63d1885f1a31de5ae2
   md5: 37d01894f256b2a6921c5a218f42f8a2
