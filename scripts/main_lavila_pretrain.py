@@ -38,7 +38,7 @@ def get_args_parser():
     )
     parser.add_argument(
         "--root-val",
-        default="datasets/EK100/EK100_320p_15sec/",
+        deafult="datasets/EK100/video_320p_15sec",
         type=str,
         help="path to val dataset root",
     )
