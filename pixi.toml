@@ -28,6 +28,7 @@ ffmpeg = "4.*"
 make = "*"
 cmake = "*"
 packaging = ">=25.0,<26"
+wandb = ">=0.21.1,<0.22"
 
 [pypi-dependencies]
 torch = "==1.13.1+cu117"
