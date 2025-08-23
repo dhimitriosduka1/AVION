@@ -49,9 +49,9 @@ PYTHONPATH=.:third_party/decord/python/ torchrun \
 
 |  Corpus  | LLM-aug. | Corpus size | Backbone | per-gpu<br>batch-size | GPU×hour^ | EK-100 MIR<br>avg. mAP | EK-100 MIR<br>avg. nDCG |                                checkpoint                               | md5sum |
 | :------: | :------: | :---------: | :------: | :----------------: | :-------: | :--------------------: | :---------------------: | :---------------------------------------------------------------------: | :----: |
-|  Ego4D   |    no    |   4.0M      |  ViT-B   |       256          |  ~130    |       27.5/28.4        |       29.1/29.5         | [best Epoch](https://utexas.box.com/s/yp1krj3dsmr8wj0sz01t10bwa9fgq3zy) | fc3b7f |
-|  Ego4D   |    yes   |    35M      |  ViT-B   |       256          |   ~260    |       31.1/32.9        |       31.9/32.7         | [best Epoch](https://utexas.box.com/s/e681nrxivc9makufvrumrfuaopk57h4n) | 91a90b |
-|  Ego4D   |    yes   |    35M      |  ViT-L   |       112          |   ~680    |       36.4/37.6        |       35.1/35.3         | [best Epoch](https://utexas.box.com/s/1iatmrs7ufdeooce09a61t1n6wsouf4l) | f377f6 |
+|  Ego4D   |    no    |   4.0M      |  ViT-B   |       256          |  ~130    |       27.5/28.4        |       29.1/29.5         | [best Epoch](https://drive.google.com/file/d/1l-kaIHSoXSOtyEEzhE4CQVFRbEH1P2F7/view?usp=drive_link) | fc3b7f |
+|  Ego4D   |    yes   |    35M      |  ViT-B   |       256          |   ~260    |       31.1/32.9        |       31.9/32.7         | [best Epoch](https://drive.google.com/file/d/1CiHEIdFSUut6mIweqObrsdbMMCPasSLQ/view?usp=sharing) | 91a90b |
+|  Ego4D   |    yes   |    35M      |  ViT-L   |       112          |   ~680    |       36.4/37.6        |       35.1/35.3         | [best Epoch](https://drive.google.com/file/d/1NvlW5KQnPEr435EeRGmVf9BN6uv-s9BY/view?usp=sharing) | f377f6 |
 
 
 
@@ -83,8 +83,8 @@ PYTHONPATH=.:third_party/decord/python/ torchrun \
 
 | LLM-aug. | Backbone | V->T mAP | T->V mAP | avg mAP | V->T nDCG | T->V nDCG | avg nDCG |                               checkpoint                                | md5sum |
 | :------: | :------: | :------: | :------: | :-----: | :-------: | :-------: | :------: | :---------------------------------------------------------------------: | :----: |
-|   yes    |   ViT-B  |   55.7   |   48.2   |  52.0   |   67.8    |   65.3    |   66.5   | [best epoch](https://utexas.box.com/s/ke5kwfixttb4t7uxdbs9gmiiuu1582dg) | e099c0 |
-|   yes    |   ViT-L  |   57.9   |   51.1   |  54.5   |   70.4    |   67.6    |   69.0   | [best epoch](https://utexas.box.com/s/m7f65hg9eonz34g0l2x5r0t92ouh0u4w) | f82079 |
+|   yes    |   ViT-B  |   55.7   |   48.2   |  52.0   |   67.8    |   65.3    |   66.5   | [best epoch](https://drive.google.com/file/d/1cVLsfjSHI0_7DeLKMjdHrSX-UKLmZKhE/view?usp=sharing) | e099c0 |
+|   yes    |   ViT-L  |   57.9   |   51.1   |  54.5   |   70.4    |   67.6    |   69.0   | [best epoch](https://drive.google.com/file/d/1Fnw7lb7Gw0MZf41R9kXf64mUanvIGIw8/view?usp=sharing) | f82079 |
 
 
 ### EK-100 Action Recognition (CLS)
@@ -131,9 +131,9 @@ PYTHONPATH=.:third_party/decord/python/ torchrun \
 
 | LLM-aug. | Backbone | Verb Top1 | Noun Top1 | Action Top1 |                                checkpoint                               | md5sum |
 | :------: | :------: | :-------: | :-------: | :---------: | :---------------------------------------------------------------------: | :----: |
-|   no     |   ViT-B  |   67.9    |   57.6    |    47.3     | [best epoch](https://utexas.box.com/s/2fkvtc67m0f82wmm5cnqfo7wg951lobv) | b40f3e |
-|   yes    |   ViT-B  |   70.0    |   59.4    |    49.5     | [best epoch](https://utexas.box.com/s/8iokob6ahb94gp1bqbmauhpeunqwx79j) | 6c3c5e |
-|   yes    |   ViT-L  |   73.0    |   65.4    |    54.4     | [best epoch](https://utexas.box.com/s/crnqo9bu0owtfz4yc1yqf8hz6g0ze39b) | 1871f4 |
+|   no     |   ViT-B  |   67.9    |   57.6    |    47.3     | [best epoch](https://drive.google.com/file/d/1-5v_c3UGnuSU_wIsgKmsbBAhsbY_Y8mP/view?usp=sharing) | b40f3e |
+|   yes    |   ViT-B  |   70.0    |   59.4    |    49.5     | [best epoch](https://drive.google.com/file/d/1YgxYjmpSxI26wdnKeeT0YakEIAFP5HjF/view?usp=sharing) | 6c3c5e |
+|   yes    |   ViT-L  |   73.0    |   65.4    |    54.4     | [best epoch](https://drive.google.com/file/d/1HSL6AQox5FGwp_yZBHgECkj_gvifA3EN/view?usp=sharing) | 1871f4 |
 
 
 ## Pre-training and Fine-tuning VideoMAE
@@ -183,5 +183,5 @@ PYTHONPATH=.:third_party/decord/python/ torchrun \
 
 |           | Backbone |   Top-1   |   Top-5   |                                checkpoint                                 | md5sum |
 | :-------: | :------: | :-------: | :-------: | :-----------------------------------------------------------------------: | :----: |
-| pre-train |   ViT-B  |   67.9    |   57.6    | [700-th epoch](https://utexas.box.com/s/61vjh8k4q3ia8wlns0rmkbnazzxipua9) | 2bbcaf |
-| fine-tune |   ViT-B  |   80.0    |   94.5    |   [best epoch](https://utexas.box.com/s/p9tigkrop86f60ae6o85nbxfwh53dghm) | 5cd5c5 |
+| pre-train |   ViT-B  |   67.9    |   57.6    | [700-th epoch](https://drive.google.com/file/d/1Uuc1Wjc41MSYNibux7L4zs0XePZw5IxM/view?usp=sharing) | 2bbcaf |
+| fine-tune |   ViT-B  |   80.0    |   94.5    |   [best epoch](https://drive.google.com/file/d/1XnC38Qz2195fLjurpRYCbioMuA48ZVFu/view?usp=sharing) | 5cd5c5 |
