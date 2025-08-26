@@ -127,13 +127,6 @@ def video_loader(
         all_frames = []
         # allocate absolute frame-ids into the relative ones
         for chunk in range(chunk_start, chunk_end + chunk_len, chunk_len):
-            rel_frame_ids = list(
-                filter(
-                    lambda x: int(chunk * fps) <= x < int((chunk + chunk_len) * fps),
-                    frame_ids,
-                )
-            )
-            rel_frame_ids = [int(frame_id - chunk * fps) for frame_id in rel_frame_ids]
             vr = get_video_reader(
                 osp.join(root, "{}.{}".format(vid, ext), "{}.{}".format(chunk, ext)),
                 num_threads=threads,
@@ -142,6 +135,19 @@ def video_loader(
                 fast_rcc=fast_rcc,
                 rcc_params=rcc_params,
             )
+
+            rel_frame_ids = list(
+                filter(
+                    lambda x: int(chunk * fps) <= x < int((chunk + chunk_len) * fps),
+                    frame_ids,
+                )
+            )
+
+            rel_frame_ids = [int(frame_id - chunk * fps) for frame_id in rel_frame_ids]
+            
+            # # Clamp indices to valid range [0, len(vr)-1]
+            # rel_frame_ids = [min(idx, len(vr) - 1) for idx in rel_frame_ids]
+
             try:
                 frames = vr.get_batch(rel_frame_ids).asnumpy()
             except decord.DECORDError as error:

@@ -25,6 +25,8 @@ import avion.utils.distributed as dist_utils
 from avion.utils.evaluation_ek100mir import get_mAP, get_nDCG
 from avion.utils.meters import AverageMeter, ProgressMeter
 from avion.utils.misc import check_loss_nan
+from avion.utils.wandb_manager import WandBManager
+from avion.utils.global_step import GlobalStep
 
 
 def get_args_parser():
@@ -32,7 +34,7 @@ def get_args_parser():
     parser.add_argument("--dataset", default="ego4d", type=str, choices=["ego4d"])
     parser.add_argument(
         "--root",
-        default="datasets/Ego4D/videos_320px_15sec/",
+        default="/ptmp/dduka/databases/ego4d/video_320px_15sec/",
         type=str,
         help="path to train dataset root",
     )
@@ -200,12 +202,26 @@ def get_args_parser():
     parser.add_argument("--dist-backend", default="nccl", type=str)
     parser.add_argument("--seed", default=0, type=int)
     parser.add_argument("--gpu", default=None, type=int, help="GPU id to use.")
+
+    # Wandb arguments
+    parser.add_argument("--wandb-project-name", default="Video Alignment", type=str)
+    parser.add_argument("--wandb-entity", default="dduka-max-planck-society", type=str)
+    parser.add_argument("--wandb-run-name", type=str, required=True)
+
     return parser
 
 
 def main(args):
     dist_utils.init_distributed_mode(args)
     dist_utils.random_seed(args.seed, dist_utils.get_rank())
+
+    # Init wandb
+    wandb_manager = WandBManager(
+        project_name=args.wandb_project_name,
+        entity=args.wandb_entity,
+        config=vars(args),
+    )
+    wandb_manager.start_run(run_name=args.wandb_run_name)
 
     model = getattr(model_clip, args.model)(
         freeze_temperature=args.freeze_temperature,
@@ -499,7 +515,10 @@ def main(args):
 
     print(args)
 
-    val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
+    # if args.start_epoch == 0:
+    #     val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
+    #     val_stats = {f"test_{k}": v for k, v in val_stats.items()}
+    #     wandb_manager.log_metrics(val_stats, step=GlobalStep.get())
 
     print("=> beginning training")
     best_acc1 = 0.0
@@ -516,6 +535,7 @@ def main(args):
             epoch,
             lr_schedule,
             args,
+            wandb_manager,
         )
 
         if (epoch + 1) % args.eval_freq != 0:
@@ -552,9 +572,13 @@ def main(args):
             "epoch": epoch,
         }
 
+        wandb_manager.log_metrics(log_stats, step=GlobalStep.get())
+
         if dist_utils.is_main_process():
             with open(os.path.join(args.output_dir, "log.txt"), "a") as f:
                 f.write(json.dumps(log_stats) + "\n")
+
+    wandb_manager.finish_run()
 
 
 def train(
@@ -567,6 +591,7 @@ def train(
     epoch,
     lr_schedule,
     args,
+    wandb_manager,
 ):
     batch_time = AverageMeter("Time", ":6.2f")
     data_time = AverageMeter("Data", ":6.2f")
@@ -581,8 +606,12 @@ def train(
         prefix="Epoch: [{}]".format(epoch),
     )
 
+    print("Epoch {}, lr {:.6f}".format(epoch, optimizer.param_groups[0]["lr"]))
+
     # switch to train mode
     model.train()
+
+    print("Put model in training mode")
 
     end = time.time()
 
@@ -594,6 +623,8 @@ def train(
             [],
         )
 
+    print("Start training epoch {}".format(epoch))
+
     for data_iter, inputs in enumerate(train_loader):
         optim_iter = data_iter // args.update_freq
 
@@ -602,6 +633,8 @@ def train(
 
         # update weight decay and learning rate according to their schedule
         it = iters_per_epoch * epoch + optim_iter  # global training iteration
+        GlobalStep.set(value=it)
+
         for k, param_group in enumerate(optimizer.param_groups):
             if lr_schedule is not None:
                 param_group["lr"] = lr_schedule[it]
@@ -662,6 +695,8 @@ def train(
                     loss_dict = criterion(image_features, text_features, logit_scale)
                     loss = loss_dict["loss"]
 
+        print(f"Loss {loss}")
+
         check_loss_nan(loss)
         scaler.scale(loss).backward()
 
@@ -695,7 +730,18 @@ def train(
 
         if optim_iter % args.print_freq == 0:
             progress.display(optim_iter)
+
+        # Log to wandb
+        wandb_manager.log_metrics(
+            {
+                **{f"train/{k}": v.avg for k, v in metrics.items()},
+                "train/lr": optimizer.param_groups[0]["lr"]
+            },
+            step=GlobalStep.get(),
+        )
+
     progress.synchronize()
+
     return {
         **{k: v.avg for k, v in metrics.items()},
         "lr": optimizer.param_groups[0]["lr"],
