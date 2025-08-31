@@ -9,12 +9,11 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --constraint="gpu"
 
-#SBATCH --gres=gpu:a100:4
+#SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=72
 #SBATCH --mem=500000
 
 #SBATCH --time=23:59:59
-#SBATCH --array=1-3%1
 #SBATCH --wait-all-nodes=1
 
 # Set up distributed training environment variables
@@ -37,7 +36,7 @@ EXP_PATH=/ptmp/dduka/work/training_metadata/avion/$RUN_NAME
 
 mkdir -p $EXP_PATH
 
-srun --cpu_bind=v --accel-bind=gn torchrun \
+srun --cpu_bind=v --accel-bind=gn pixi run torchrun \
     --nproc_per_node=4 \
     --nnodes=$SLURM_NNODES \
     --node_rank=$SLURM_NODEID \
@@ -52,4 +51,4 @@ srun --cpu_bind=v --accel-bind=gn torchrun \
     --fused-decode-crop \
     --fix-lr \
     --wandb-run-name $RUN_NAME \
-    --output-dir $EXP_PATH 2>&1 | tee $EXP_PATH/log.txt 
+    --output-dir $EXP_PATH 2>&1 | tee $EXP_PATH/log.txt
