@@ -68,7 +68,7 @@ def video_loader(
     fast_rcc=False,
     rcc_params=(224,),
     jitter=False,
-):
+):  
     assert fps > 0, "fps should be greater than 0"
 
     if chunk_len == -1:
@@ -145,9 +145,6 @@ def video_loader(
 
             rel_frame_ids = [int(frame_id - chunk * fps) for frame_id in rel_frame_ids]
             
-            # # Clamp indices to valid range [0, len(vr)-1]
-            # rel_frame_ids = [min(idx, len(vr) - 1) for idx in rel_frame_ids]
-
             try:
                 frames = vr.get_batch(rel_frame_ids).asnumpy()
             except decord.DECORDError as error:
