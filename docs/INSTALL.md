@@ -22,6 +22,11 @@ CUDA_HOME=$CUDA_HOME pip install -r requirements.txt
 ## Compile Decord
 We build the Fused DecodeCrop operator on top of [dmlc/decord](https://github.com/dmlc/decord). To install our forked decord from source:
 
+(0) In case ffmpeg is not installed:
+```
+conda install -c conda-forge "ffmpeg=4.4.2"
+```
+
 (1) Build the shared library
 ```bash
 cd third_party/decord/
