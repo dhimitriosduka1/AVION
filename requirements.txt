@@ -8,3 +8,5 @@ submitit==1.4.5
 timm==0.6.12
 transformers==4.53.0
 git+https://github.com/openai/CLIP.git
+wandb
+python-dotenv
