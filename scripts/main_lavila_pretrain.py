@@ -26,24 +26,29 @@ from avion.utils.evaluation_ek100mir import get_mAP, get_nDCG
 from avion.utils.meters import AverageMeter, ProgressMeter
 from avion.utils.misc import check_loss_nan
 
+# Additional imports
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 def get_args_parser():
     parser = argparse.ArgumentParser(description="AVION pretrain", add_help=False)
     parser.add_argument("--dataset", default="ego4d", type=str, choices=["ego4d"])
     parser.add_argument(
         "--root",
-        default="datasets/Ego4D/videos_320px_15sec/",
+        default=os.environ.get("ROOT"),
         type=str,
         help="path to train dataset root",
     )
     parser.add_argument(
         "--root-val",
-        default="datasets/EK100/EK100_320p_15sec/",
+        default=os.environ.get("ROOT_VAL"),
         type=str,
         help="path to val dataset root",
     )
     parser.add_argument(
-        "--train-metadata", type=str, default="datasets/Ego4D/ego4d_train.pkl"
+        "--train-metadata", type=str, default=os.environ.get("TRAIN_METADATA")
     )
     parser.add_argument(
         "--train-metadata-aux",
@@ -55,12 +60,12 @@ def get_args_parser():
     parser.add_argument(
         "--val-metadata",
         type=str,
-        default="datasets/EK100/epic-kitchens-100-annotations/retrieval_annotations/EPIC_100_retrieval_test.csv",
+        default=os.environ.get("VAL_METADATA"),
     )
     parser.add_argument(
         "--relevancy-path",
         type=str,
-        default="datasets/EK100/epic-kitchens-100-annotations/retrieval_annotations/relevancy/caption_relevancy_EPIC_100_retrieval_test.pkl",
+        default=os.environ.get("RELEVANCY_PATH"),
     )
     parser.add_argument("--output-dir", default="./", type=str, help="output dir")
     parser.add_argument("--context-length", default=77, type=int)
@@ -766,9 +771,11 @@ def validate_mir(val_loader, transform_gpu, model, criterion, args):
                 if i % args.print_freq == 0:
                     progress.display(i)
     progress.synchronize()
+
     for j in range(args.world_size):
         all_video_embed[j] = torch.cat(all_video_embed[j], dim=0).numpy()
         all_text_embed[j] = torch.cat(all_text_embed[j], dim=0).numpy()
+
     all_text_embed_reorg, all_video_embed_reorg = [], []
     for i in range(total_num):
         all_video_embed_reorg.append(
@@ -777,30 +784,41 @@ def validate_mir(val_loader, transform_gpu, model, criterion, args):
         all_text_embed_reorg.append(
             all_text_embed[i % args.world_size][i // args.world_size]
         )
+
     all_text_embed = np.vstack(all_text_embed_reorg)
     all_video_embed = np.vstack(all_video_embed_reorg)
+
     all_text_embed = all_text_embed[:9668, :]
     all_video_embed = all_video_embed[:9668, :]
+
     similarity_matrix = np.matmul(all_video_embed, all_text_embed.T)
     similarity_matrix = (similarity_matrix + 1) / 2
+
     video_id = pd.read_csv(args.val_metadata).values[:, 0]
     text_id = pd.read_csv(args.val_metadata.replace("test", "test_sentence")).values[
         :, 0
     ]
     indexes = [video_id.tolist().index(elem) for elem in text_id]
+
     similarity_matrix = similarity_matrix[:, indexes]
+
     print(similarity_matrix.shape)
+
     rel_matrix = pd.read_pickle(args.relevancy_path)
     vis_map, txt_map, avg_map = get_mAP(similarity_matrix, rel_matrix)
+
     print(
         "mAP: V->T: {:.3f} T->V: {:.3f} AVG: {:.3f}".format(vis_map, txt_map, avg_map)
     )
+
     vis_nDCG, txt_nDCG, avg_nDCG = get_nDCG(similarity_matrix, rel_matrix)
+
     print(
         "nDCG: V->T: {:.3f} T->V: {:.3f} AVG: {:.3f}".format(
             vis_nDCG, txt_nDCG, avg_nDCG
         )
     )
+
     return {
         **{k: v.avg for k, v in metrics.items()},
         "vis_map": vis_map,
