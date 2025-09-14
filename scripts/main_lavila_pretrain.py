@@ -4,6 +4,7 @@ from functools import partial
 import json
 import os
 import time
+from typing import Any
 import numpy as np
 import pandas as pd
 
@@ -30,6 +31,8 @@ from avion.utils.misc import check_loss_nan
 from dotenv import load_dotenv
 
 load_dotenv()
+
+import wandb
 
 
 def get_args_parser():
@@ -205,12 +208,41 @@ def get_args_parser():
     parser.add_argument("--dist-backend", default="nccl", type=str)
     parser.add_argument("--seed", default=0, type=int)
     parser.add_argument("--gpu", default=None, type=int, help="GPU id to use.")
+
+    parser.add_argument("--wandb-project-name", default="Thesis", type=str)
+    parser.add_argument("--wandb-run-name", default=None, type=str, required=True)
+
     return parser
 
 
 def main(args):
     dist_utils.init_distributed_mode(args)
     dist_utils.random_seed(args.seed, dist_utils.get_rank())
+
+    # Initialize wandb
+    if dist_utils.is_main_process():
+        wandb.init(
+            project=args.wandb_project_name,
+            name=args.wandb_run_name,
+            id=args.wandb_run_name,  # use run name as id
+            tags=[],
+            resume="allow",
+            config=vars(args),
+        )
+
+        # Replace default log with custom method
+        original_log_fn = wandb.log
+        def custom_wandb_log(
+            data: dict[str, Any],
+            step: int | None = None,
+            commit: bool | None = None,
+        ):
+            if dist_utils.is_main_process():
+                original_log_fn(data=data, step=step, commit=commit)
+            else:
+                return
+
+        wandb.log = custom_wandb_log
 
     model = getattr(model_clip, args.model)(
         freeze_temperature=args.freeze_temperature,
@@ -227,6 +259,7 @@ def main(args):
         pretrain_zoo=args.pretrain_zoo,
         pretrain_path=args.pretrain_path,
     )
+
     model.cuda(args.gpu)
 
     if args.distributed:
@@ -333,6 +366,7 @@ def main(args):
             print("=> no checkpoint found at '{}'".format(args.resume))
     else:
         # auto-resume from latest checkpoint in output directory
+        # this is where the model by default resumes from
         latest = os.path.join(args.output_dir, "checkpoint.pt")
         if os.path.isfile(latest):
             print("=> loading latest checkpoint '{}'".format(latest))
@@ -393,6 +427,7 @@ def main(args):
             transforms_video.NormalizeVideo(mean=mean, std=std),
         ]
         gpu_val_transform_ls = []
+
     train_transform = torchvision.transforms.Compose(base_train_transform_ls)
     train_transform_gpu = torch.nn.Sequential(*gpu_train_transform_ls)
     val_transform = torchvision.transforms.Compose(base_val_transform_ls)
@@ -412,6 +447,7 @@ def main(args):
         fast_rrc=args.fused_decode_crop,
         rrc_params=(crop_size, (0.5, 1.0)),
     )
+
     if args.train_metadata_aux is not None:
         aux_dataset_list = []
         for aux_i, aux_pkl in enumerate(args.train_metadata_aux):
@@ -461,6 +497,7 @@ def main(args):
     else:
         train_sampler = None
         val_sampler = None
+
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -471,7 +508,9 @@ def main(args):
         sampler=train_sampler,
         drop_last=True,
     )
+
     print("len(train_loader) = {}".format(len(train_loader)))
+
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=args.batch_size,
@@ -481,6 +520,7 @@ def main(args):
         sampler=val_sampler,
         drop_last=False,
     )
+
     print("len(val_loader) = {}".format(len(val_loader)))
 
     if args.evaluate:
@@ -504,7 +544,10 @@ def main(args):
 
     print(args)
 
-    val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
+    # Perform zsh only if the start_epoch is 0
+    if args.start_epoch == 10:
+        val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
+        wandb.log(data={f"test_{k}": v for k, v in val_stats.items()}, step=0)
 
     print("=> beginning training")
     best_acc1 = 0.0
@@ -536,6 +579,7 @@ def main(args):
         if args.use_zero:
             print("consolidated on rank {} because of ZeRO".format(args.rank))
             optimizer.consolidate_state_dict(0)
+
         dist_utils.save_on_master(
             {
                 "epoch": epoch + 1,
@@ -551,16 +595,13 @@ def main(args):
             args.output_dir,
         )
 
-        log_stats = {
-            **{f"train_{k}": v for k, v in train_stats.items()},
-            **{f"test_{k}": v for k, v in val_stats.items()},
-            "epoch": epoch,
-        }
+        # Here I just need to log the eval stats and/or train stats and not increment the step counter
+        # since I already did that in the training loop
 
-        if dist_utils.is_main_process():
-            with open(os.path.join(args.output_dir, "log.txt"), "a") as f:
-                f.write(json.dumps(log_stats) + "\n")
-
+        wandb.log(
+            data={f"test_{k}": v for k, v in val_stats.items()},
+            step=wandb.run.step - 1
+        )
 
 def train(
     train_loader,
@@ -700,7 +741,14 @@ def train(
 
         if optim_iter % args.print_freq == 0:
             progress.display(optim_iter)
+    
+        wandb.log(
+            data={"loss": loss.item(), "lr": optimizer.param_groups[0]['lr'], "logit_scale": logit_scale},
+            step=it
+        )
+
     progress.synchronize()
+    
     return {
         **{k: v.avg for k, v in metrics.items()},
         "lr": optimizer.param_groups[0]["lr"],
@@ -836,4 +884,14 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
-    main(args)
+
+    try:
+        main(args)
+    except Exception as e:
+        if dist_utils.is_main_process():
+            print(f"Error during training: {e}", flush=True)
+            wandb.finish(exit_code=1)
+        raise
+    finally:
+        if dist_utils.is_main_process():
+            wandb.finish()
