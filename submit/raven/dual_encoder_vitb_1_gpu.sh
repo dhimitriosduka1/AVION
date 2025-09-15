@@ -34,12 +34,12 @@ echo "Total GPUs: $((SLURM_NNODES * 1))"
 cd /u/dduka/work/projects/AVION
 
 RUN_NAME=LAVILA_PRETRAIN_BASELINE_DEBUG_ONE_GPU
-EXP_PATH=/ptmp/dduka/work/training_metadata/avion/$RUN_NAME
+EXP_PATH=/ptmp/dduka/work/training_metadata/avion/LAVILA_PRETRAIN_BASELINE_DEBUG_ONE_GPU
 
 mkdir -p $EXP_PATH
 
 PYTHONPATH=.:third_party/decord/python/ torchrun \
-    --nproc_per_node=1 \
+    --nproc_per_node=2 \
     scripts/main_lavila_pretrain.py \
     --use-flash-attn \
     --grad-checkpointing \
@@ -48,4 +48,4 @@ PYTHONPATH=.:third_party/decord/python/ torchrun \
     --freeze-temperature \
     --fused-decode-crop \
     --fix-lr \
-    --wandb-run-name $RUN_NAME \
+    --wandb-run-name LAVILA_PRETRAIN_BASELINE_DEBUG_TWO_GPUs \

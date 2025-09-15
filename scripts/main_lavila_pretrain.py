@@ -230,20 +230,6 @@ def main(args):
             config=vars(args),
         )
 
-        # Replace default log with custom method
-        original_log_fn = wandb.log
-        def custom_wandb_log(
-            data: dict[str, Any],
-            step: int | None = None,
-            commit: bool | None = None,
-        ):
-            if dist_utils.is_main_process():
-                original_log_fn(data=data, step=step, commit=commit)
-            else:
-                return
-
-        wandb.log = custom_wandb_log
-
     model = getattr(model_clip, args.model)(
         freeze_temperature=args.freeze_temperature,
         use_grad_checkpointing=args.use_grad_checkpointing,
@@ -547,7 +533,8 @@ def main(args):
     # Perform zsh only if the start_epoch is 0
     if args.start_epoch == 10:
         val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
-        wandb.log(data={f"test_{k}": v for k, v in val_stats.items()}, step=0)
+        if dist_utils.is_main_process():
+            wandb.log(data={f"test_{k}": v for k, v in val_stats.items()}, step=0)
 
     print("=> beginning training")
     best_acc1 = 0.0
@@ -598,10 +585,11 @@ def main(args):
         # Here I just need to log the eval stats and/or train stats and not increment the step counter
         # since I already did that in the training loop
 
-        wandb.log(
-            data={f"test_{k}": v for k, v in val_stats.items()},
-            step=wandb.run.step - 1
-        )
+        if dist_utils.is_main_process():
+            wandb.log(
+                data={f"test_{k}": v for k, v in val_stats.items()},
+                step=wandb.run.step - 1
+            )
 
 def train(
     train_loader,
@@ -741,11 +729,12 @@ def train(
 
         if optim_iter % args.print_freq == 0:
             progress.display(optim_iter)
-    
-        wandb.log(
-            data={"loss": loss.item(), "lr": optimizer.param_groups[0]['lr'], "logit_scale": logit_scale},
-            step=it
-        )
+
+        if dist_utils.is_main_process():
+            wandb.log(
+                data={"loss": loss.item(), "lr": optimizer.param_groups[0]['lr'], "logit_scale": logit_scale},
+                step=it
+            )
 
     progress.synchronize()
     
