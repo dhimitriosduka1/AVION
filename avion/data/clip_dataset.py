@@ -110,10 +110,14 @@ def video_loader(
                 root, "{}.{}".format(vid, ext), "{}.{}".format(chunk_end, ext)
             )
             if not osp.exists(video_filename):
-                # print("{} does not exists!".format(video_filename))
+                print("{} does not exists!".format(video_filename))
                 chunk_end -= chunk_len
             else:
-                vr = decord.VideoReader(video_filename)
+                try:
+                    vr = decord.VideoReader(video_filename)
+                except Exception as e:
+                    print("!!! {} cannot be loaded!".format(video_filename))
+                    raise e
                 end_second = min(end_second, (len(vr) - 1) / fps + chunk_end)
                 assert chunk_start <= chunk_end
                 break
@@ -253,31 +257,21 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
     ):
         if self.dataset == "ego4d":
             vid, start_second, end_second, narration = self.samples[i][:4]
-            try:
-                frames = video_loader(
-                    self.root,
-                    vid,
-                    "mp4",
-                    start_second,
-                    end_second,
-                    chunk_len=chunk_len,
-                    clip_length=clip_length,
-                    threads=threads,
-                    fast_rrc=fast_rrc,
-                    rrc_params=rrc_params,
-                    fast_rcc=fast_rcc,
-                    rcc_params=rcc_params,
-                    jitter=is_training,
-                )
-            except Exception as e:
-                print(e)
-                print(
-                    "==> Error in loading video: {}, return a dummy video with start and end timestamps {} - {}".format(
-                        vid, start_second, end_second
-                    )
-                )
-                raise e
-
+            frames = video_loader(
+                self.root,
+                vid,
+                "mp4",
+                start_second,
+                end_second,
+                chunk_len=chunk_len,
+                clip_length=clip_length,
+                threads=threads,
+                fast_rrc=fast_rrc,
+                rrc_params=rrc_params,
+                fast_rcc=fast_rcc,
+                rcc_params=rcc_params,
+                jitter=is_training,
+            )
             if isinstance(narration, list):
                 if narration_selection == "random":
                     narration = random.choice(narration)
