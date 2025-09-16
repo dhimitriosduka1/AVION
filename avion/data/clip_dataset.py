@@ -119,14 +119,13 @@ def video_loader(
                 def check_video_valid(path):
                     cap = cv2.VideoCapture(path)
                     if not cap.isOpened():
-                        print(f"[WARN] Cannot open {path}", file=sys.stderr, flush=True)
+                        print(f"[WARN] Cannot open {path}", flush=True)
                         return False
                     ret, _ = cap.read()
                     cap.release()
                     if not ret:
                         print(
                             f"[WARN] {path} has no readable frames",
-                            file=sys.stderr,
                             flush=True,
                         )
                         return False
