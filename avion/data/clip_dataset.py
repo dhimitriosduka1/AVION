@@ -113,11 +113,13 @@ def video_loader(
                 print("{} does not exists!".format(video_filename))
                 chunk_end -= chunk_len
             else:
-                try:
-                    vr = decord.VideoReader(video_filename)
-                except Exception as e:
-                    print(f"!!! {video_filename} cannot be loaded!", flush=True)
-                    raise e
+                import os
+                import sys
+                
+                if not os.path.exists(video_filename):
+                    print(f"!!! File does not exist: {video_filename}", file=sys.stderr, flush=True)
+                
+                vr = decord.VideoReader(video_filename)
                 end_second = min(end_second, (len(vr) - 1) / fps + chunk_end)
                 assert chunk_start <= chunk_end
                 break
