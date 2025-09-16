@@ -116,7 +116,7 @@ def video_loader(
                 try:
                     vr = decord.VideoReader(video_filename)
                 except Exception as e:
-                    print("!!! {} cannot be loaded!".format(video_filename))
+                    print(f"!!! {video_filename} cannot be loaded!", flush=True)
                     raise e
                 end_second = min(end_second, (len(vr) - 1) / fps + chunk_end)
                 assert chunk_start <= chunk_end
