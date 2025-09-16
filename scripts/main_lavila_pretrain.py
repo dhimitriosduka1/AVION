@@ -506,9 +506,9 @@ def main(args):
 
     if args.evaluate_train_dataset:
         # Iterate over all batches in the training dataset to see if all of them behave correctly
-        for _it, _ in tqdm(enumerate(train_loader)):
-            print(f"===> Processed batch {_it} of {len(train_loader)}")
-        print("===> Finished evaluation of training dataset")
+        for _it, _ in enumerate(train_loader):
+            if _it % 100 == 0:
+                print(f"===> Processed batch {_it} of {len(train_loader)}")
         return
 
     val_loader = torch.utils.data.DataLoader(
