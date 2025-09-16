@@ -33,7 +33,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import wandb
-
+from tqdm import tqdm
 
 def get_args_parser():
     parser = argparse.ArgumentParser(description="AVION pretrain", add_help=False)
@@ -211,6 +211,13 @@ def get_args_parser():
 
     parser.add_argument("--wandb-project-name", default="Thesis", type=str)
     parser.add_argument("--wandb-run-name", default=None, type=str, required=True)
+
+    # For performing some testing without training
+    parser.add_argument(
+        "--evaluate-train-dataset",
+        action="store_true",
+        help="If true, will do a full pass over the training dataset for evaluation purposes only",
+    )
 
     return parser
 
@@ -496,6 +503,13 @@ def main(args):
     )
 
     print("len(train_loader) = {}".format(len(train_loader)))
+
+    if args.evaluate_train_dataset:
+        # Iterate over all batches in the training dataset to see if all of them behave correctly
+        for _it, _ in tqdm(enumerate(train_loader)):
+            print(f"===> Processed batch {_it} of {len(train_loader)}")
+        print("===> Finished evaluation of training dataset")
+        return
 
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
