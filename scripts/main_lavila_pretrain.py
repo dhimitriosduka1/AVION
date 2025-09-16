@@ -1,6 +1,7 @@
 import argparse
 from collections import OrderedDict
 from functools import partial
+from itertools import islice
 import json
 import os
 import time
@@ -34,6 +35,7 @@ load_dotenv()
 
 import wandb
 from tqdm import tqdm
+
 
 def get_args_parser():
     parser = argparse.ArgumentParser(description="AVION pretrain", add_help=False)
@@ -512,12 +514,29 @@ def main(args):
     print("len(train_loader) = {}".format(len(train_loader)))
 
     if args.evaluate_train_dataset:
-        # Iterate over all batches in the training dataset to see if all of them behave correctly
-        from itertools import islice
+        # Start evaluation at batch index args.start_batch (default 0)
+        start_batch = args.skip_to_batch
 
-        for _it, _ in enumerate(islice(train_loader, args.skip_to_batch, None)):
+        dataset = train_loader.dataset
+        sampler = train_loader.sampler
+        bs = train_loader.batch_size
+
+        # reconstruct the sample order from the sampler
+        indices = list(sampler)
+
+        # skip to the right place
+        start = start_batch * bs
+        total_batches = len(indices) // bs
+
+        # iterate from the chosen batch onwards
+        for _it, i in enumerate(range(start, len(indices), bs), start=start_batch):
+            batch_indices = indices[i : i + bs]
+            batch_samples = [dataset[j] for j in batch_indices]
+            train_loader.collate_fn(batch_samples)
+
             if _it % 100 == 0:
-                print(f"===> Processed batch {_it} of {len(train_loader)}")
+                print(f"===> Processed batch {_it} of {total_batches}")
+
         return
 
     val_loader = torch.utils.data.DataLoader(
@@ -611,8 +630,9 @@ def main(args):
         if dist_utils.is_main_process():
             wandb.log(
                 data={f"test_{k}": v for k, v in val_stats.items()},
-                step=wandb.run.step - 1
+                step=wandb.run.step - 1,
             )
+
 
 def train(
     train_loader,
@@ -755,12 +775,16 @@ def train(
 
         if dist_utils.is_main_process():
             wandb.log(
-                data={"loss": loss.item(), "lr": optimizer.param_groups[0]['lr'], "logit_scale": logit_scale},
-                step=it
+                data={
+                    "loss": loss.item(),
+                    "lr": optimizer.param_groups[0]["lr"],
+                    "logit_scale": logit_scale,
+                },
+                step=it,
             )
 
     progress.synchronize()
-    
+
     return {
         **{k: v.avg for k, v in metrics.items()},
         "lr": optimizer.param_groups[0]["lr"],
