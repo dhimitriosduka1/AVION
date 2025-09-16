@@ -113,12 +113,29 @@ def video_loader(
                 print("{} does not exists!".format(video_filename))
                 chunk_end -= chunk_len
             else:
-                import os
+                import cv2
                 import sys
-                
-                if not os.path.exists(video_filename):
-                    print(f"!!! File does not exist: {video_filename}", file=sys.stderr, flush=True)
-                
+
+                def check_video_valid(path):
+                    cap = cv2.VideoCapture(path)
+                    if not cap.isOpened():
+                        print(f"[WARN] Cannot open {path}", file=sys.stderr, flush=True)
+                        return False
+                    ret, _ = cap.read()
+                    cap.release()
+                    if not ret:
+                        print(
+                            f"[WARN] {path} has no readable frames",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        return False
+                    return True
+
+                if not check_video_valid(video_filename):
+                    print("{} does not exists!".format(video_filename))
+                    exit(1)
+
                 vr = decord.VideoReader(video_filename)
                 end_second = min(end_second, (len(vr) - 1) / fps + chunk_end)
                 assert chunk_start <= chunk_end
