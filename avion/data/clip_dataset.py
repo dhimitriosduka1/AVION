@@ -253,21 +253,31 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
     ):
         if self.dataset == "ego4d":
             vid, start_second, end_second, narration = self.samples[i][:4]
-            frames = video_loader(
-                self.root,
-                vid,
-                "mp4",
-                start_second,
-                end_second,
-                chunk_len=chunk_len,
-                clip_length=clip_length,
-                threads=threads,
-                fast_rrc=fast_rrc,
-                rrc_params=rrc_params,
-                fast_rcc=fast_rcc,
-                rcc_params=rcc_params,
-                jitter=is_training,
-            )
+            try:
+                frames = video_loader(
+                    self.root,
+                    vid,
+                    "mp4",
+                    start_second,
+                    end_second,
+                    chunk_len=chunk_len,
+                    clip_length=clip_length,
+                    threads=threads,
+                    fast_rrc=fast_rrc,
+                    rrc_params=rrc_params,
+                    fast_rcc=fast_rcc,
+                    rcc_params=rcc_params,
+                    jitter=is_training,
+                )
+            except Exception as e:
+                print(e)
+                print(
+                    "==> Error in loading video: {}, return a dummy video with start and end timestamps {} - {}".format(
+                        vid, start_second, end_second
+                    )
+                )
+                raise e
+
             if isinstance(narration, list):
                 if narration_selection == "random":
                     narration = random.choice(narration)

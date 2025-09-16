@@ -219,6 +219,13 @@ def get_args_parser():
         help="If true, will do a full pass over the training dataset for evaluation purposes only",
     )
 
+    parser.add_argument(
+        "--skip-to-batch",
+        default=0,
+        type=int,
+        help="If > 0, will skip to this batch in the training dataloader",
+    )
+
     return parser
 
 
@@ -506,7 +513,9 @@ def main(args):
 
     if args.evaluate_train_dataset:
         # Iterate over all batches in the training dataset to see if all of them behave correctly
-        for _it, _ in enumerate(train_loader):
+        from itertools import islice
+
+        for _it, _ in enumerate(islice(train_loader, args.skip_to_batch, None)):
             if _it % 100 == 0:
                 print(f"===> Processed batch {_it} of {len(train_loader)}")
         return
