@@ -573,7 +573,7 @@ def main(args):
     print(args)
 
     # Perform zsh only if the start_epoch is 0
-    if args.start_epoch == 10:
+    if args.start_epoch == 0:
         val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
         if dist_utils.is_main_process():
             wandb.log(data={f"test_{k}": v for k, v in val_stats.items()}, step=0)
