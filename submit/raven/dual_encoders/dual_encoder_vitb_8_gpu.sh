@@ -30,17 +30,18 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3
 # Debug: Print GPU and node information
 echo "Job running on nodes: $SLURM_JOB_NODELIST"
 echo "Total nodes: $SLURM_NNODES" 
-echo "GPUs per node: 1"
-echo "Total GPUs: $((SLURM_NNODES * 1))"
+echo "GPUs per node: $SLURM_GPUS_ON_NODE"
 
 cd /u/dduka/work/projects/AVION
 
-RUN_NAME=LAVILA_PRETRAIN_BASELINE_DE
+RUN_NAME=LAVILA_PRETRAIN_DUAL_ENCODER_BASELINE
 EXP_PATH=/ptmp/dduka/work/training_metadata/avion/$RUN_NAME
 
 mkdir -p $EXP_PATH
 
-srun --cpu_bind=v --accel-bind=gn PYTHONPATH=.:third_party/decord/python/ torchrun \
+export PYTHONPATH=.:third_party/decord/python/
+    
+srun --cpu_bind=v --accel-bind=gn torchrun \
     --nproc_per_node=4 \
     --nnodes=$SLURM_NNODES \
     --node_rank=$SLURM_NODEID \
