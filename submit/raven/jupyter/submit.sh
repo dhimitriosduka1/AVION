@@ -8,8 +8,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --constraint="gpu"
 
-#SBATCH --gres=gpu:4
-#SBATCH --mem=240000
+#SBATCH --gres=gpu:1
+#SBATCH --mem=120000
 
 #SBATCH --time=23:59:59
 
