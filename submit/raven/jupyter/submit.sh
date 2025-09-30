@@ -14,6 +14,8 @@
 #SBATCH --time=23:59:59
 
 module purge
-module load avion
+module load anaconda/3/2023.03
+
+conda activate avion
 
 jupyter lab --no-browser --ip=0.0.0.0 --port=8888
