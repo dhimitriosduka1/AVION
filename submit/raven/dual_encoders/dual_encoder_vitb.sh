@@ -33,6 +33,7 @@ echo "GPUs per node: $SLURM_GPUS_ON_NODE"
 
 cd /u/dduka/work/projects/Thesis/AVION
 
+# The original name of the run is LAVILA_PRETRAIN_DUAL_ENCODER_BASELINE_512
 RUN_NAME=DUAL_ENCODER_PRETRAIN_BASELINE_512
 EXP_PATH=/ptmp/dduka/work/training_metadata/avion/$RUN_NAME
 
