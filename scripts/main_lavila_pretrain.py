@@ -630,7 +630,7 @@ def main(args):
         if dist_utils.is_main_process():
             wandb.log(
                 data={f"test_{k}": v for k, v in val_stats.items()},
-                step=wandb.run.step - 1,
+                step=wandb.run.step,
             )
 
 
