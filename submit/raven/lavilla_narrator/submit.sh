@@ -17,7 +17,7 @@
 module purge
 module load anaconda/3/2023.03
 
-conda activate lavilla
+conda activate lavila
 
 # Set up distributed training environment variables
 export MASTER_PORT=$((12000 + $RANDOM % 20000))
@@ -44,4 +44,4 @@ torchrun \
     --nproc_per_node=1 \
     second_party/lavilla_narrator/main.py \
     --wandb-run-name $RUN_NAME \
-    --video-path-root /ptmp/dduka/databases/EK100_320p_15sec_30fps_libx264/video_320p_15sec \
+    --video-path-root /ptmp/dduka/databases/ego4d/video_320px_15sec/ \
