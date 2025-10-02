@@ -14,6 +14,7 @@
 
 #SBATCH --time=23:59:59
 #SBATCH --array=1-2%1
+#SBATCH --wait-all-nodes=1
 
 module purge
 module load anaconda/3/2023.03
