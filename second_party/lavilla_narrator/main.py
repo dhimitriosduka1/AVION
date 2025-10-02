@@ -30,14 +30,7 @@ def decode_one(generated_ids, tokenizer):
     return generated_text_str
 
 
-def main(args):
-
-    wandb.init(project="Thesis", id=args.wandb_run_name, config=args, resume="allow")
-
-    frames = get_frames(
-        args.video_path_root, args.video_path, args.num_segments, jitter=False
-    )
-
+def load_model_and_tokenizer(args):
     ckpt_path = os.path.join(args.checkpoint_root, args.model)
 
     os.makedirs(args.checkpoint_root, exist_ok=True)
@@ -74,11 +67,15 @@ def main(args):
     assert torch.cuda.is_available(), "CUDA is not available"
 
     model.cuda()
-
     model.eval()
 
-    # transforms on input frames
-    val_transform = transforms.Compose(
+    tokenizer = MyGPT2Tokenizer(args.tokenizer_name, add_bos=True)
+
+    return model, tokenizer
+
+
+def load_val_transform(args):
+    return transforms.Compose(
         [
             Permute([3, 0, 1, 2]),
             transforms.Resize(args.crop_size),
@@ -90,10 +87,38 @@ def main(args):
         ]
     )
 
+
+def generate_text(generated_text_ids, tokenizer, num_return_sequences):
+    generated_text_strs = []
+
+    for i in range(num_return_sequences):
+        generated_text_str = decode_one(generated_text_ids[i], tokenizer)
+        generated_text_strs.append(generated_text_str)
+        print("{}: {}".format(i, generated_text_str))
+
+    return generated_text_strs
+
+
+def load_frames(val_transform, args):
+    frames = get_frames(
+        args.video_path_root, args.video_path, args.num_segments, jitter=False
+    )
+
     frames = val_transform(frames)
     frames = frames.unsqueeze(0)
 
-    tokenizer = MyGPT2Tokenizer(args.tokenizer_name, add_bos=True)
+    return frames
+
+
+def main(args):
+
+    wandb.init(project="Thesis", id=args.wandb_run_name, config=args, resume="allow")
+
+    model, tokenizer = load_model_and_tokenizer(args)
+
+    val_transform = load_val_transform(args)
+
+    frames = load_frames(val_transform, args)
 
     with torch.no_grad():
         frames = frames.cuda(non_blocking=True)
@@ -112,22 +137,29 @@ def main(args):
             early_stopping=args.early_stopping,
         )
 
-    generated_text_strs = []
-    for i in range(args.num_return_sequences):
-        generated_text_str = decode_one(generated_text_ids[i], tokenizer)
-        generated_text_strs.append(generated_text_str)
-        print("{}: {}".format(i, generated_text_str))
+    generated_text_strs = generate_text(
+        generated_text_ids, tokenizer, args.num_return_sequences
+    )
 
-    # Log the generated text strings and video on wandb
-    video_path = os.path.join(args.video_path_root, args.video_path)
-    video_data = wandb.Video(video_path, caption="Generated Video")
-    wandb.log({"generated_text_strs": generated_text_strs, "video": video_data})
+    tbl = wandb.Table(columns=["text"])
+    for s in generated_text_strs:
+        tbl.add_data(s)
+
+    log_dict = {"generated_text_strs": tbl}
+    if args.wandb_log_video:
+        # Log the generated text strings and video on wandb
+        video_path = os.path.join(args.video_path_root, args.video_path)
+        video_data = wandb.Video(video_path, caption="Generated Video")
+        log_dict["video"] = video_data
+
+    wandb.log(log_dict)
 
 
 def get_args_parser():
     parser = argparse.ArgumentParser(description="LAVILA narrator", add_help=True)
     parser.add_argument("--wandb-project-name", default="Thesis", type=str)
     parser.add_argument("--wandb-run-name", default=None, type=str, required=True)
+    parser.add_argument("--wandb-log-video", action="store_true")
 
     parser.add_argument(
         "--video-path-root",
