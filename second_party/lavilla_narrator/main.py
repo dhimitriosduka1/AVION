@@ -32,6 +32,8 @@ def decode_one(generated_ids, tokenizer):
 
 def main(args):
 
+    wandb.init(project="Thesis", id=args.wandb_run_name, config=args, resume="allow")
+
     frames = get_frames(
         args.video_path_root, args.video_path, args.num_segments, jitter=False
     )
@@ -110,9 +112,16 @@ def main(args):
             early_stopping=args.early_stopping,
         )
 
+    generated_text_strs = []
     for i in range(args.num_return_sequences):
         generated_text_str = decode_one(generated_text_ids[i], tokenizer)
+        generated_text_strs.append(generated_text_str)
         print("{}: {}".format(i, generated_text_str))
+
+    # Log the generated text strings and video on wandb
+    video_path = os.path.join(args.video_path_root, args.video_path)
+    video_data = wandb.Video(video_path, caption="Generated Video")
+    wandb.log({"generated_text_strs": generated_text_strs, "video": video_data})
 
 
 def get_args_parser():
@@ -120,13 +129,25 @@ def get_args_parser():
     parser.add_argument("--wandb-project-name", default="Thesis", type=str)
     parser.add_argument("--wandb-run-name", default=None, type=str, required=True)
 
-    parser.add_argument("--video-path-root", default="/ptmp/dduka/databases/ego4d/video_320px_15sec", type=str)
+    parser.add_argument(
+        "--video-path-root",
+        default="/ptmp/dduka/databases/ego4d/video_320px_15sec",
+        type=str,
+    )
 
     # To remove
-    parser.add_argument("--video-path", default="eaa3ba4c-0da9-47c8-9aca-0b5cc83c902a.mp4/0.mp4", type=str)
+    parser.add_argument(
+        "--video-path",
+        default="eaa3ba4c-0da9-47c8-9aca-0b5cc83c902a.mp4/0.mp4",
+        type=str,
+    )
 
     # Model
-    parser.add_argument("--checkpoint-root", default="/ptmp/dduka/work/training_metadata/lavilla/checkpoints", type=str)
+    parser.add_argument(
+        "--checkpoint-root",
+        default="/ptmp/dduka/work/training_metadata/lavilla/checkpoints",
+        type=str,
+    )
     parser.add_argument(
         "--model-url",
         default="https://dl.fbaipublicfiles.com/lavila/checkpoints/narrator/{}",
