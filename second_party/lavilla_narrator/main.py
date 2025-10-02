@@ -94,8 +94,7 @@ def main(args):
     tokenizer = MyGPT2Tokenizer(args.tokenizer_name, add_bos=True)
 
     with torch.no_grad():
-        if args.cuda:
-            frames = frames.cuda(non_blocking=True)
+        frames = frames.cuda(non_blocking=True)
 
         image_features = model.encode_image(frames)
 
