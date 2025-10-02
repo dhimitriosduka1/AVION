@@ -39,9 +39,12 @@ EXP_PATH=/ptmp/dduka/work/training_metadata/avion/$RUN_NAME
 mkdir -p $EXP_PATH
 
 export PYTHONPATH=.:third_party/decord/python/
+
+nvidia-smi
     
 torchrun \
     --nproc_per_node=1 \
     second_party/lavilla_narrator/main.py \
     --wandb-run-name $RUN_NAME \
-    --video-path-root /ptmp/dduka/databases/ego4d/video_320px_15sec/ \
+    --num-segments 60 \
+    --num-frames 4 \

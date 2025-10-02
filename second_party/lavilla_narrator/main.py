@@ -94,20 +94,25 @@ def generate_text(generated_text_ids, tokenizer, num_return_sequences):
     for i in range(num_return_sequences):
         generated_text_str = decode_one(generated_text_ids[i], tokenizer)
         generated_text_strs.append(generated_text_str)
-        print("{}: {}".format(i, generated_text_str))
 
     return generated_text_strs
 
 
 def load_frames(val_transform, args):
-    frames = get_frames(
+    original_frames = get_frames(
         args.video_path_root, args.video_path, args.num_segments, jitter=False
     )
 
-    frames = val_transform(frames)
-    frames = frames.unsqueeze(0)
+    assert args.num_segments // args.num_frames == 15
+    number_of_chunks = args.num_segments // args.num_frames
 
-    return frames
+    original_frames_chunked = original_frames.chunk(number_of_chunks)
+
+    frames_chunked = []
+    for chunk in original_frames_chunked:
+        frames_chunked.append(val_transform(chunk).unsqueeze(0))
+
+    return frames_chunked
 
 
 def main(args):
@@ -118,41 +123,40 @@ def main(args):
 
     val_transform = load_val_transform(args)
 
-    frames = load_frames(val_transform, args)
+    frames_chunked = load_frames(val_transform, args)
+
+    results = []
 
     with torch.no_grad():
-        frames = frames.cuda(non_blocking=True)
+        for frames_chunk in frames_chunked:
+            frames_chunk = frames_chunk.cuda(non_blocking=True)
 
-        image_features = model.encode_image(frames)
+            image_features = model.encode_image(frames_chunk)
 
-        generated_text_ids, _ = model.generate(
-            image_features,
-            tokenizer,
-            target=None,
-            max_text_length=args.max_text_length,
-            top_k=args.top_k,
-            top_p=args.top_p,
-            num_return_sequences=args.num_return_sequences,
-            temperature=args.temperature,
-            early_stopping=args.early_stopping,
-        )
+            generated_text_ids, _ = model.generate(
+                image_features,
+                tokenizer,
+                target=None,
+                max_text_length=args.max_text_length,
+                top_k=args.top_k,
+                top_p=args.top_p,
+                num_return_sequences=args.num_return_sequences,
+                temperature=args.temperature,
+                early_stopping=args.early_stopping,
+            )
 
-    generated_text_strs = generate_text(
-        generated_text_ids, tokenizer, args.num_return_sequences
-    )
+            generated_text_strs = generate_text(
+                generated_text_ids, tokenizer, args.num_return_sequences
+            )
 
-    tbl = wandb.Table(columns=["text"])
-    for s in generated_text_strs:
-        tbl.add_data(s)
+            results.append(generated_text_strs)
 
-    log_dict = {"generated_text_strs": tbl}
-    if args.wandb_log_video:
-        # Log the generated text strings and video on wandb
-        video_path = os.path.join(args.video_path_root, args.video_path)
-        video_data = wandb.Video(video_path, caption="Generated Video")
-        log_dict["video"] = video_data
-
-    wandb.log(log_dict)
+    for i, generated_text_strs in enumerate(results):
+        print(f"Chunk {i}:")
+        print("--------------------------------")
+        for s in generated_text_strs:
+            print(f"  {s}")
+        print("--------------------------------")
 
 
 def get_args_parser():
