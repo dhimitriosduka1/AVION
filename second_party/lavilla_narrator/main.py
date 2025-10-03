@@ -5,6 +5,7 @@ import urllib.request
 import avion.utils.distributed as dist_utils
 from collections import OrderedDict
 
+import json
 import torch
 import torchvision.transforms as transforms
 import torchvision.transforms._transforms_video as transforms_video
@@ -98,13 +99,13 @@ def generate_text(generated_text_ids, tokenizer, num_return_sequences):
     return generated_text_strs
 
 
-def load_frames(val_transform, args):
+def load_frames(video_path, num_segments, num_frames, val_transform, jitter=False):
     original_frames = get_frames(
-        args.video_path_root, args.video_path, args.num_segments, jitter=False
+        video_path=video_path, num_segments=num_segments, jitter=jitter
     )
 
-    assert args.num_segments // args.num_frames == 15
-    number_of_chunks = args.num_segments // args.num_frames
+    assert num_segments // num_frames == 15
+    number_of_chunks = num_segments // num_frames
 
     original_frames_chunked = original_frames.chunk(number_of_chunks)
 
@@ -115,6 +116,22 @@ def load_frames(val_transform, args):
     return frames_chunked
 
 
+def load_all_video_and_captions_paths(root_dir):
+    video_paths = []
+    for dirpath, _, filenames in os.walk(root_dir):
+        for name in filenames:
+            if name.lower().endswith(".mp4"):
+                video_paths.append(os.path.abspath(os.path.join(dirpath, name)))
+
+    # TODO: Maybe remove this hardcoded path later
+    captions_paths = [
+        path.replace("/video_320px_15sec/", "/video_320px_15sec/lavila_captions/")
+        for path in video_paths
+    ]
+
+    return video_paths, captions_paths
+
+
 def main(args):
 
     wandb.init(project="Thesis", id=args.wandb_run_name, config=args, resume="allow")
@@ -123,40 +140,57 @@ def main(args):
 
     val_transform = load_val_transform(args)
 
-    frames_chunked = load_frames(val_transform, args)
+    # Load all videos
+    video_paths, captions_paths = load_all_video_and_captions_paths(
+        args.video_path_root
+    )
 
-    results = []
+    for video_path, captions_path in zip(video_paths, captions_paths):
+        # Check if captions path exists
+        if os.path.exists(captions_path):
+            continue
 
-    with torch.no_grad():
-        for frames_chunk in frames_chunked:
-            frames_chunk = frames_chunk.cuda(non_blocking=True)
+        # Create a directory for the video, which is a 15 second clip
+        os.makedirs(captions_path, exist_ok=True)
 
-            image_features = model.encode_image(frames_chunk)
+        frames_chunked = load_frames(
+            video_path=video_path,
+            num_segments=args.num_segments,
+            num_frames=args.num_frames,
+            val_transform=val_transform,
+            jitter=False,
+        )
 
-            generated_text_ids, _ = model.generate(
-                image_features,
-                tokenizer,
-                target=None,
-                max_text_length=args.max_text_length,
-                top_k=args.top_k,
-                top_p=args.top_p,
-                num_return_sequences=args.num_return_sequences,
-                temperature=args.temperature,
-                early_stopping=args.early_stopping,
-            )
+        results = []
 
-            generated_text_strs = generate_text(
-                generated_text_ids, tokenizer, args.num_return_sequences
-            )
+        with torch.no_grad():
+            for i, frames_chunk in enumerate(frames_chunked):
+                frames_chunk = frames_chunk.cuda(non_blocking=True)
 
-            results.append(generated_text_strs)
+                image_features = model.encode_image(frames_chunk)
 
-    for i, generated_text_strs in enumerate(results):
-        print(f"Chunk {i}:")
-        print("--------------------------------")
-        for s in generated_text_strs:
-            print(f"  {s}")
-        print("--------------------------------")
+                generated_text_ids, _ = model.generate(
+                    image_features,
+                    tokenizer,
+                    target=None,
+                    max_text_length=args.max_text_length,
+                    top_k=args.top_k,
+                    top_p=args.top_p,
+                    num_return_sequences=args.num_return_sequences,
+                    temperature=args.temperature,
+                    early_stopping=args.early_stopping,
+                )
+
+                generated_text_strs = generate_text(
+                    generated_text_ids, tokenizer, args.num_return_sequences
+                )
+
+                results.append(
+                    {"chunk_id": i, "generated_text_strs": generated_text_strs}
+                )
+
+        with open(f"{captions_path}/captions.json", "w") as f:
+            json.dump(results, f)
 
 
 def get_args_parser():

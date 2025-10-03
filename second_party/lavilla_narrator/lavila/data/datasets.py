@@ -49,18 +49,16 @@ def video_loader_by_frames(video_reader, frame_ids):
     return torch.stack(frames, dim=0)
 
 
-def get_frames(root, vid, num_segments, jitter=False):
+def get_frames(video_path, num_segments, jitter=False):
     """
     Get frames from a video. This method assummes that the frames are always sampled between the start and end of the video.
     Args:
-        root: root directory of the video
-        vid: video id
+        video_path: path to the video
         num_segments: number of segments
         jitter: whether to jitter the frames
     Returns:
         frames: frames from the video
     """
-    video_path = osp.join(root, vid)
     video_reader = decord.VideoReader(video_path)
 
     frame_ids = get_frame_ids(
