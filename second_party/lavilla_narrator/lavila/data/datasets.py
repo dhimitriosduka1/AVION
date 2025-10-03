@@ -58,13 +58,16 @@ def get_frames(video_path, num_segments, jitter=False):
         jitter: whether to jitter the frames
     Returns:
         frames: frames from the video
+        frame_ids: frame ids used to load the frames
     """
     video_reader = decord.VideoReader(video_path)
 
     frame_ids = get_frame_ids(
         0, len(video_reader), num_segments=num_segments, jitter=jitter
     )
-    return video_loader_by_frames(video_reader, frame_ids)
+
+    fps = video_reader.get_avg_fps()
+    return video_loader_by_frames(video_reader, frame_ids), frame_ids, fps
 
 
 # This is just for understanding the code, not used in the project
