@@ -7,6 +7,7 @@ from collections import OrderedDict
 
 import json
 import torch
+import numpy as np
 import torchvision.transforms as transforms
 import torchvision.transforms._transforms_video as transforms_video
 
@@ -100,7 +101,7 @@ def generate_text(generated_text_ids, tokenizer, num_return_sequences):
 
 
 def load_frames(video_path, num_segments, num_frames, val_transform, jitter=False):
-    original_frames = get_frames(
+    original_frames, frame_ids, fps = get_frames(
         video_path=video_path, num_segments=num_segments, jitter=jitter
     )
 
@@ -108,12 +109,13 @@ def load_frames(video_path, num_segments, num_frames, val_transform, jitter=Fals
     number_of_chunks = num_segments // num_frames
 
     original_frames_chunked = original_frames.chunk(number_of_chunks)
+    frame_ids_chunked = np.array_split(frame_ids, number_of_chunks)
 
     frames_chunked = []
     for chunk in original_frames_chunked:
         frames_chunked.append(val_transform(chunk).unsqueeze(0))
 
-    return frames_chunked
+    return frames_chunked, frame_ids_chunked, fps
 
 
 def load_all_video_and_captions_paths(root_dir):
@@ -153,7 +155,7 @@ def main(args):
         # Create a directory for the video, which is a 15 second clip
         os.makedirs(captions_path, exist_ok=True)
 
-        frames_chunked = load_frames(
+        frames_chunked, frame_ids_chunked, fps = load_frames(
             video_path=video_path,
             num_segments=args.num_segments,
             num_frames=args.num_frames,
@@ -186,12 +188,21 @@ def main(args):
                 )
 
                 results.append(
-                    {"chunk_id": i, "generated_text_strs": generated_text_strs}
+                    {
+                        "chunk_id": i,
+                        "generated_text_strs": generated_text_strs,
+                        "frame_ids": frame_ids_chunked[i].tolist(),
+                        "timestamps": [
+                            frame_id / fps for frame_id in frame_ids_chunked[i].tolist()
+                        ],  # Convert frame ids to timestamps
+                        "fps": fps,
+                    }
                 )
 
         with open(f"{captions_path}/captions.json", "w") as f:
             json.dump(results, f)
 
+        wandb.log({"total_videos": len(video_paths)})
 
 def get_args_parser():
     parser = argparse.ArgumentParser(description="LAVILA narrator", add_help=True)
