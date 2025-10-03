@@ -216,13 +216,6 @@ def get_args_parser():
         type=str,
     )
 
-    # To remove
-    parser.add_argument(
-        "--video-path",
-        default="eaa3ba4c-0da9-47c8-9aca-0b5cc83c902a.mp4/0.mp4",
-        type=str,
-    )
-
     # Model
     parser.add_argument(
         "--checkpoint-root",
