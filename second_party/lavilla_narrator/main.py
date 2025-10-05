@@ -127,7 +127,10 @@ def load_all_video_and_captions_paths(root_dir):
 
     # TODO: Maybe remove this hardcoded path later
     captions_paths = [
-        path.replace("/video_320px_15sec/", "/video_320px_15sec/lavila_captions/")
+        path.replace(
+            "/video_320px_15sec/",
+            f"/video_320px_15sec/lavila_captions_num_frames_{args.num_frames}/",
+        )
         for path in video_paths
     ]
 
@@ -203,6 +206,7 @@ def main(args):
             json.dump(results, f)
 
         wandb.log({"total_videos": len(video_paths)})
+
 
 def get_args_parser():
     parser = argparse.ArgumentParser(description="LAVILA narrator", add_help=True)
