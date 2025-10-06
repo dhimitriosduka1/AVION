@@ -70,7 +70,13 @@ def load_model_and_tokenizer(args):
     # Assert that cuda is available
     assert torch.cuda.is_available(), "CUDA is not available"
 
-    model.cuda()
+    # Move model to the correct GPU based on rank
+    if hasattr(args, "gpu") and args.gpu is not None:
+        torch.cuda.set_device(args.gpu)
+        model.cuda(args.gpu)
+    else:
+        model.cuda()
+
     model.eval()
 
     tokenizer = MyGPT2Tokenizer(args.tokenizer_name, add_bos=True)
@@ -188,8 +194,14 @@ def custom_collate_fn(batch):
 
 
 def main(args):
+    # Initialize distributed mode
+    dist_utils.init_distributed_mode(args)
 
-    wandb.init(project="Thesis", id=args.wandb_run_name, config=args, resume="allow")
+    # Initialize wandb only on main process
+    if dist_utils.is_main_process():
+        wandb.init(
+            project="Thesis", id=args.wandb_run_name, config=args, resume="allow"
+        )
 
     model, tokenizer = load_model_and_tokenizer(args)
 
@@ -206,13 +218,22 @@ def main(args):
 
     print(f"len(dataset) = {len(dataset)}")
 
+    # Create distributed sampler if in distributed mode
+    if args.distributed:
+        sampler = torch.utils.data.distributed.DistributedSampler(
+            dataset, shuffle=False
+        )
+    else:
+        sampler = None
+
     # Create the dataloader
     dataloader = torch.utils.data.DataLoader(
         dataset,
         batch_size=args.batch_size,
-        shuffle=False,
+        shuffle=(sampler is None),
         num_workers=args.num_workers,
         collate_fn=custom_collate_fn,
+        sampler=sampler,
     )
 
     print(f"len(dataloader) = {len(dataloader)}")
@@ -223,7 +244,11 @@ def main(args):
         caption_path = sample["caption_path"]
 
         with torch.no_grad():
-            frames = frames.cuda(non_blocking=True)
+            # Move frames to the correct GPU
+            if hasattr(args, "gpu") and args.gpu is not None:
+                frames = frames.cuda(args.gpu, non_blocking=True)
+            else:
+                frames = frames.cuda(non_blocking=True)
             image_features = model.encode_image(frames)
 
             # print(f"image_features.shape: {image_features.shape}")
@@ -373,6 +398,20 @@ def get_args_parser():
     parser.add_argument("--batch-size", default=4, type=int)
     parser.add_argument("--num-workers", default=4, type=int)
 
+    # Distributed training parameters
+    parser.add_argument(
+        "--dist-url",
+        default="env://",
+        type=str,
+        help="url used to set up distributed training",
+    )
+    parser.add_argument(
+        "--distributed",
+        default=False,
+        action="store_true",
+        help="enable distributed mode",
+    )
+
     parser.add_argument(
         "--video-path-root",
         default="/ptmp/dduka/databases/ego4d/video_320px_15sec",
@@ -427,8 +466,14 @@ if __name__ == "__main__":
     except Exception as e:
         if dist_utils.is_main_process():
             print(f"Error during narration generation: {e}", flush=True)
+        if dist_utils.is_dist_avail_and_initialized():
+            torch.distributed.barrier()
+        if dist_utils.is_main_process():
             wandb.finish(exit_code=1)
         raise
     finally:
+        # Synchronize all processes before finishing
+        if dist_utils.is_dist_avail_and_initialized():
+            torch.distributed.barrier()
         if dist_utils.is_main_process():
             wandb.finish()
