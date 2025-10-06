@@ -98,7 +98,9 @@ class VideoNarratorDataset(torch.utils.data.Dataset):
     def _load_samples(self):
         """Load all video paths and their corresponding caption files."""
         samples = []
+        num_videos_excluded = 0
 
+        print(f"Starting to load samples from {self.video_root}")
         for dirpath, _, filenames in os.walk(self.video_root):
             for name in filenames:
                 if name.lower().endswith(".mp4"):
@@ -110,12 +112,20 @@ class VideoNarratorDataset(torch.utils.data.Dataset):
                         f"/video_320px_15sec/{self.caption_suffix}/",
                     )
 
+                    # Exclude the video if the caption path already exists
+                    if os.path.exists(caption_path):
+                        num_videos_excluded += 1
+                        continue
+
                     samples.append(
                         {
                             "video_path": video_path,
                             "caption_path": caption_path,
                         }
                     )
+
+        print(f"Loaded {len(samples)} samples")
+        print(f"Excluded {num_videos_excluded} videos")
 
         return samples
 
