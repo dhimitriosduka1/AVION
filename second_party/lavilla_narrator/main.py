@@ -99,7 +99,9 @@ def load_val_transform(args):
 
 
 # generated_text_ids.shape: torch.Size([600, 22])
-def generate_text(generated_text_ids, tokenizer, num_return_sequences, batch_size):
+def generate_text(
+    generated_text_ids, tokenizer, num_return_sequences, num_chunks_per_video
+):
     generated_text_strs = []
 
     for i in range(generated_text_ids.shape[0]):
@@ -112,10 +114,10 @@ def generate_text(generated_text_ids, tokenizer, num_return_sequences, batch_siz
         for i in range(0, len(generated_text_strs), num_return_sequences)
     ]
 
-    # Group the chunks into a list with length batch_size
+    # Group the chunks per video: number of chunks per video is 15
     generated_text_strs = [
-        generated_text_strs[i : i + batch_size]
-        for i in range(0, len(generated_text_strs), batch_size)
+        generated_text_strs[i : i + num_chunks_per_video]
+        for i in range(0, len(generated_text_strs), num_chunks_per_video)
     ]
 
     return generated_text_strs
@@ -274,7 +276,7 @@ def main(args):
                 generated_text_ids,
                 tokenizer,
                 args.num_return_sequences,
-                args.batch_size,
+                args.num_segments // args.num_frames,
             )
 
             frame_ids = sample["frames_ids"].tolist()
@@ -292,7 +294,9 @@ def main(args):
                 fps_for_video = fps[j]
 
                 print(f"frame_ids_for_video.len: {len(frame_ids_for_video)}")
-                print(f"generated_captions_for_video.len: {len(generated_captions_for_video)}")
+                print(
+                    f"generated_captions_for_video.len: {len(generated_captions_for_video)}"
+                )
 
                 for frames_id, captions in zip(
                     frame_ids_for_video, generated_captions_for_video
