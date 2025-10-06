@@ -99,17 +99,26 @@ def load_val_transform(args):
 
 
 # generated_text_ids.shape: torch.Size([600, 22])
-def generate_text(generated_text_ids, tokenizer, num_return_sequences):
+def generate_text(generated_text_ids, tokenizer, num_return_sequences, batch_size):
     generated_text_strs = []
 
     for i in range(generated_text_ids.shape[0]):
         generated_text_str = decode_one(generated_text_ids[i], tokenizer)
         generated_text_strs.append(generated_text_str)
 
-    return [
+    # Group the generated texts into chunks of num_return_sequences
+    generated_text_strs = [
         generated_text_strs[i : i + num_return_sequences]
         for i in range(0, len(generated_text_strs), num_return_sequences)
     ]
+
+    # Group the chunks into a list with length batch_size
+    generated_text_strs = [
+        generated_text_strs[i : i + batch_size]
+        for i in range(0, len(generated_text_strs), batch_size)
+    ]
+
+    return generated_text_strs
 
 
 def load_frames(video_path, num_segments, num_frames, val_transform, jitter=False):
@@ -184,9 +193,6 @@ def custom_collate_fn(batch):
         except Exception:
             out["frames_ids"] = frames_ids_list
 
-    B, S, T = out["frames_ids"].shape
-    out["frames_ids"] = out["frames_ids"].reshape(B * S, T)
-
     out["video_path"] = [b["video_path"] for b in batch]
     out["caption_path"] = [b["caption_path"] for b in batch]
 
@@ -209,7 +215,7 @@ def main(args):
 
     dataset = VideoNarratorDataset(
         video_root=args.video_path_root,
-        caption_suffix=f"lavila_captions_num_frames_{args.num_frames}",
+        caption_suffix=f"lavila_captions_num_frames_{args.num_frames}_testing_testing",
         num_frames=args.num_frames,
         num_segments=args.num_segments,
         val_transform=val_transform,
@@ -251,8 +257,6 @@ def main(args):
                 frames = frames.cuda(non_blocking=True)
             image_features = model.encode_image(frames)
 
-            # print(f"image_features.shape: {image_features.shape}")
-
             generated_text_ids, _ = model.generate(
                 image_features,
                 tokenizer,
@@ -265,128 +269,54 @@ def main(args):
                 early_stopping=args.early_stopping,
             )
 
-            # print(f"generated_text_ids.shape: {generated_text_ids.shape}")
-
-            # A list of lists [num_of_total_chunks, [num_of_return_sequences]]
+            # A list of lists with a size of batch_size
             generated_text_strs = generate_text(
-                generated_text_ids, tokenizer, args.num_return_sequences
+                generated_text_ids,
+                tokenizer,
+                args.num_return_sequences,
+                args.batch_size,
             )
 
-            wandb.log({"progess": i / len(dataloader)})
+            frame_ids = sample["frames_ids"].tolist()
+            fps = sample["fps"].tolist()
 
-            # print(f"generated_text_strs: {generated_text_strs}")
+            # Store results for this batch. video_path has the length of a batch
+            for j, (v_path, c_path) in enumerate(zip(video_path, caption_path)):
+                # I want to have a caption file for each of the images. This means that it
+                # would be better to loop over the video_path and captions path. Maybe
+                # keeping track of the index is helpful too.
+                results = {"video_path": v_path, "c_path": c_path, "metadata": []}
 
-            # fps = sample["fps"].tolist()
+                frame_ids_for_video = frame_ids[j]
+                generated_captions_for_video = generated_text_strs[j]
+                fps_for_video = fps[j]
 
-            # for i in range(args.batch_size):
-            #     results = {"fps": fps[i]}
+                print(f"frame_ids_for_video.len: {len(frame_ids_for_video)}")
+                print(f"generated_captions_for_video.len: {len(generated_captions_for_video)}")
 
-            # "timestamps": [
-            #             frame_id / fps for frame_id in frame_ids_chunked[i].tolist()
-            #         ],  # Convert frame ids to timestamps
+                for frames_id, captions in zip(
+                    frame_ids_for_video, generated_captions_for_video
+                ):
+                    results["metadata"].append(
+                        {
+                            "captions": captions,
+                            "frame_ids": frames_id,
+                            "timestamps": [
+                                frame_id / fps_for_video for frame_id in frames_id
+                            ],  # Convert frame ids to timestamps,
+                            "fps": fps_for_video,
+                        }
+                    )
 
-            # frame_ids = sample["frames_ids"].tolist()
+                if not os.path.exists(f"{c_path}"):
+                    os.makedirs(c_path, exist_ok=True)
 
-            # for video_path, caption_path, f_ids in zip(
-            #     video_path, caption_path, frame_ids
-            # ):
-            #     # Check if caption path exists
-            #     if not os.path.exists(caption_path):
-            #         os.makedirs(caption_path, exist_ok=True)
+                with open(f"{c_path}/captions.json", "w") as f:
+                    json.dump(results, f)
 
-            #     results = []
-
-            #     with open(f"{caption_path}/captions.json", "w") as f:
-            #         json.dump(results, f)
-
-            # for i in range(args.batch_size):
-            #     for j in range(args.num_return_sequences):
-            #         results.append({
-            #             "fps": fps[]
-            #         })
-
-            #     # Write results to a json file
-            #     with open(
-            #         f"{caption_path[i * args.batch_size + j]}/captions.json", "w"
-            #     ) as f:
-            #         json.dump(results, f)
-
-            # for _ in range(len(video_path)):
-            #     results.append(
-            #         "frame_ids": frame_ids_chunked[i].tolist(),
-            #         "timestamps": [
-            #             frame_id / fps for frame_id in frame_ids_chunked[i].tolist()
-            #         ],  # Convert frame ids to timestamps
-            #         "fps": fps,
-            #     )
-            # for i in range(args.batch_size):
-            # results.append(
-            #     {
-            #         "generated_text_strs": generated_text_strs,
-            #         "frame_ids": frame_ids_chunked[i].tolist(),
-            #         "timestamps": [
-            #             frame_id / fps for frame_id in frame_ids_chunked[i].tolist()
-            #         ],  # Convert frame ids to timestamps
-            #         "fps": fps,
-            #     }
-            # )
-
-    # for video_path, captions_path in zip(video_paths, captions_paths):
-    #     # Check if captions path exists
-    #     if os.path.exists(captions_path):
-    #         continue
-
-    #     # Create a directory for the video, which is a 15 second clip
-    #     os.makedirs(captions_path, exist_ok=True)
-
-    #     frames_chunked, frame_ids_chunked, fps = load_frames(
-    #         video_path=video_path,
-    #         num_segments=args.num_segments,
-    #         num_frames=args.num_frames,
-    #         val_transform=val_transform,
-    #         jitter=False,
-    #     )
-
-    #     results = []
-
-    #     with torch.no_grad():
-    #         for i, frames_chunk in enumerate(frames_chunked):
-    #             frames_chunk = frames_chunk.cuda(non_blocking=True)
-
-    #             image_features = model.encode_image(frames_chunk)
-
-    #             generated_text_ids, _ = model.generate(
-    #                 image_features,
-    #                 tokenizer,
-    #                 target=None,
-    #                 max_text_length=args.max_text_length,
-    #                 top_k=args.top_k,
-    #                 top_p=args.top_p,
-    #                 num_return_sequences=args.num_return_sequences,
-    #                 temperature=args.temperature,
-    #                 early_stopping=args.early_stopping,
-    #             )
-
-    #             generated_text_strs = generate_text(
-    #                 generated_text_ids, tokenizer, args.num_return_sequences
-    #             )
-
-    #             results.append(
-    #                 {
-    #                     "chunk_id": i,
-    #                     "generated_text_strs": generated_text_strs,
-    #                     "frame_ids": frame_ids_chunked[i].tolist(),
-    #                     "timestamps": [
-    #                         frame_id / fps for frame_id in frame_ids_chunked[i].tolist()
-    #                     ],  # Convert frame ids to timestamps
-    #                     "fps": fps,
-    #                 }
-    #             )
-
-    #     with open(f"{captions_path}/captions.json", "w") as f:
-    #         json.dump(results, f)
-
-    #     wandb.log({"total_videos": len(video_paths)})
+            # Log progress only on main process
+            if dist_utils.is_main_process():
+                wandb.log({"progress": i / len(dataloader)})
 
 
 def get_args_parser():
