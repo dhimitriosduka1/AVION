@@ -1,7 +1,8 @@
 import torch
 import decord
 import numpy as np
-import os.path as osp
+import os
+import json
 
 
 def get_frame_ids(start_frame, end_frame, num_segments=32, jitter=True):
@@ -70,10 +71,104 @@ def get_frames(video_path, num_segments, jitter=False):
     return video_loader_by_frames(video_reader, frame_ids), frame_ids, fps
 
 
-# This is just for understanding the code, not used in the project
-if __name__ == "__main__":
-    frame_ids = get_frame_ids(0, 450, num_segments=15, jitter=False)
-    print(f"Frame IDs using number of segments 15: {frame_ids}")
+class VideoNarratorDataset(torch.utils.data.Dataset):
+    """
+    Dataset for loading videos and their generated captions.
+    """
 
-    frame_ids = get_frame_ids(0, 450, num_segments=60)
-    print(f"Frame IDs using number of segments 30: {frame_ids}")
+    def __init__(
+        self,
+        video_root,
+        caption_suffix,
+        num_frames=4,
+        num_segments=60,
+        val_transform=None,
+        jitter=False,
+    ):
+        self.video_root = video_root
+        self.caption_suffix = caption_suffix
+        self.num_frames = num_frames
+        self.num_segments = num_segments
+        self.val_transform = val_transform
+        self.jitter = jitter
+
+        self.number_of_chunks = self.num_segments // self.num_frames
+        assert self.number_of_chunks == 15
+
+        self.samples = self._load_samples()
+
+    def _load_samples(self):
+        """Load all video paths and their corresponding caption files."""
+        cache_path = os.path.join(self.video_root, "samples.json")
+
+        # If cache exists, just load and return it.
+        if os.path.isfile(cache_path):
+            print(f"Loading samples from {cache_path}")
+            with open(cache_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+
+        samples = []
+
+        for dirpath, _, filenames in os.walk(self.video_root):
+            for name in filenames:
+                if name.lower().endswith(".mp4"):
+                    video_path = os.path.abspath(os.path.join(dirpath, name))
+
+                    # Construct caption path
+                    caption_path = video_path.replace(
+                        "/video_320px_15sec/",
+                        f"/video_320px_15sec/{self.caption_suffix}/",
+                    )
+
+                    samples.append(
+                        {
+                            "video_path": video_path,
+                            "caption_path": caption_path,
+                        }
+                    )
+
+        with open(cache_path, "w", encoding="utf-8") as f:
+            print(f"Dumping samples to {cache_path}")
+            json.dump(samples, f, ensure_ascii=False, indent=2)
+
+        return samples
+
+    def _load_frames(self, video_path):
+        original_frames, frame_ids, fps = get_frames(
+            video_path=video_path, num_segments=self.num_segments, jitter=self.jitter
+        )
+
+        original_frames_chunked = original_frames.chunk(self.number_of_chunks)
+        frame_ids_chunked = np.array_split(frame_ids, self.number_of_chunks)
+
+        frames_chunked = []
+        for chunk in original_frames_chunked:
+            frames_chunked.append(self.val_transform(chunk))
+
+        return frames_chunked, frame_ids_chunked, fps
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        """
+        Args:
+            idx: index of the sample
+        Returns:
+            frames: Tensor of shape (T, H, W, C)
+            metadata: Dictionary with additional information (frame_ids, timestamps, fps, etc.)
+        """
+        sample = self.samples[idx]
+
+        video_path = sample["video_path"]
+        caption_path = sample["caption_path"]
+
+        frames, frame_ids, fps = self._load_frames(video_path)
+
+        return {
+            "video_path": video_path,
+            "frames": torch.stack(frames, dim=0),
+            "frames_ids": torch.tensor(np.array(frame_ids)),
+            "fps": torch.tensor(np.array(fps)),
+            "caption_path": caption_path,
+        }
