@@ -98,7 +98,6 @@ def load_val_transform(args):
     )
 
 
-# generated_text_ids.shape: torch.Size([600, 22])
 def generate_text(
     generated_text_ids, tokenizer, num_return_sequences, num_chunks_per_video
 ):
@@ -114,7 +113,6 @@ def generate_text(
         for i in range(0, len(generated_text_strs), num_return_sequences)
     ]
 
-    # Group the chunks per video: number of chunks per video is 15
     generated_text_strs = [
         generated_text_strs[i : i + num_chunks_per_video]
         for i in range(0, len(generated_text_strs), num_chunks_per_video)
@@ -217,7 +215,7 @@ def main(args):
 
     dataset = VideoNarratorDataset(
         video_root=args.video_path_root,
-        caption_suffix=f"lavila_captions_num_frames_{args.num_frames}_testing_testing",
+        caption_suffix=f"lavila_captions_num_frames_{args.num_frames}",
         num_frames=args.num_frames,
         num_segments=args.num_segments,
         val_transform=val_transform,
@@ -292,11 +290,6 @@ def main(args):
                 frame_ids_for_video = frame_ids[j]
                 generated_captions_for_video = generated_text_strs[j]
                 fps_for_video = fps[j]
-
-                print(f"frame_ids_for_video.len: {len(frame_ids_for_video)}")
-                print(
-                    f"generated_captions_for_video.len: {len(generated_captions_for_video)}"
-                )
 
                 for frames_id, captions in zip(
                     frame_ids_for_video, generated_captions_for_video
