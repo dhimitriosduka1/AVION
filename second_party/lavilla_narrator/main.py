@@ -5,16 +5,17 @@ import urllib.request
 import avion.utils.distributed as dist_utils
 from collections import OrderedDict
 
-import json
 import torch
 import numpy as np
 import torchvision.transforms as transforms
 import torchvision.transforms._transforms_video as transforms_video
 
+from lavila.data.datasets import VideoNarratorDataset
 from lavila.data.video_transforms import Permute
 from lavila.data.datasets import get_frames
 from lavila.models.models import VCLM_OPENAI_TIMESFORMER_LARGE_336PX_GPT2_XL
 from lavila.models.tokenizer import MyGPT2Tokenizer
+from torch.utils.data._utils.collate import default_collate as _default_collate
 
 
 def decode_one(generated_ids, tokenizer):
@@ -137,6 +138,47 @@ def load_all_video_and_captions_paths(root_dir):
     return video_paths, captions_paths
 
 
+def custom_collate_fn(batch):
+    # batch: list of dicts from your dataset __getitem__
+    # {
+    #   "video_path": str,
+    #   "frames": Tensor [S, T, C, H, W],
+    #   "frames_ids": List[int] (or Tensor),
+    #   "fps": float/int,
+    #   "caption_path": str,
+    # }
+
+    out = {}
+
+    out["frames"] = torch.stack(
+        [b["frames"] for b in batch], dim=0
+    )  # [B, S, C, T, H, W]
+
+    B, S, C, T, H, W = out["frames"].shape
+    out["frames"] = (
+        out["frames"].reshape(B * S, C, T, H, W).contiguous()  # [B*S, C, T, H, W]
+    )
+
+    out["fps"] = torch.tensor([b["fps"] for b in batch])
+
+    frames_ids_list = [b["frames_ids"] for b in batch]
+    if isinstance(frames_ids_list[0], torch.Tensor):
+        try:
+            out["frames_ids"] = torch.stack(frames_ids_list, dim=0)
+        except Exception:
+            out["frames_ids"] = frames_ids_list
+    else:
+        try:
+            out["frames_ids"] = _default_collate(frames_ids_list)
+        except Exception:
+            out["frames_ids"] = frames_ids_list
+
+    out["video_path"] = [b["video_path"] for b in batch]
+    out["caption_path"] = [b["caption_path"] for b in batch]
+
+    return out
+
+
 def main(args):
 
     wandb.init(project="Thesis", id=args.wandb_run_name, config=args, resume="allow")
@@ -145,67 +187,100 @@ def main(args):
 
     val_transform = load_val_transform(args)
 
-    # Load all videos
-    video_paths, captions_paths = load_all_video_and_captions_paths(
-        args.video_path_root
+    dataset = VideoNarratorDataset(
+        video_root=args.video_path_root,
+        caption_suffix=f"lavila_captions_num_frames_{args.num_frames}",
+        num_frames=args.num_frames,
+        num_segments=args.num_segments,
+        val_transform=val_transform,
+        jitter=False,
     )
 
-    for video_path, captions_path in zip(video_paths, captions_paths):
-        # Check if captions path exists
-        if os.path.exists(captions_path):
-            continue
+    print(f"len(dataset) = {len(dataset)}")
 
-        # Create a directory for the video, which is a 15 second clip
-        os.makedirs(captions_path, exist_ok=True)
+    # Create the dataloader
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        collate_fn=custom_collate_fn,
+    )
 
-        frames_chunked, frame_ids_chunked, fps = load_frames(
-            video_path=video_path,
-            num_segments=args.num_segments,
-            num_frames=args.num_frames,
-            val_transform=val_transform,
-            jitter=False,
-        )
+    print(f"len(dataloader) = {len(dataloader)}")
 
-        results = []
+    for sample in dataloader:
+        frames = sample["frames"]
+        frames_ids = sample["frames_ids"]
+        fps = sample["fps"]
+        video_path = sample["video_path"]
+        caption_path = sample["caption_path"]
 
         with torch.no_grad():
-            for i, frames_chunk in enumerate(frames_chunked):
-                frames_chunk = frames_chunk.cuda(non_blocking=True)
+            frames = frames.cuda(non_blocking=True)
+            image_features = model.encode_image(frames)
+            print(image_features.shape)
 
-                image_features = model.encode_image(frames_chunk)
+        break
 
-                generated_text_ids, _ = model.generate(
-                    image_features,
-                    tokenizer,
-                    target=None,
-                    max_text_length=args.max_text_length,
-                    top_k=args.top_k,
-                    top_p=args.top_p,
-                    num_return_sequences=args.num_return_sequences,
-                    temperature=args.temperature,
-                    early_stopping=args.early_stopping,
-                )
+    exit()
 
-                generated_text_strs = generate_text(
-                    generated_text_ids, tokenizer, args.num_return_sequences
-                )
+    # for video_path, captions_path in zip(video_paths, captions_paths):
+    #     # Check if captions path exists
+    #     if os.path.exists(captions_path):
+    #         continue
 
-                results.append(
-                    {
-                        "chunk_id": i,
-                        "generated_text_strs": generated_text_strs,
-                        "frame_ids": frame_ids_chunked[i].tolist(),
-                        "timestamps": [
-                            frame_id / fps for frame_id in frame_ids_chunked[i].tolist()
-                        ],  # Convert frame ids to timestamps
-                        "fps": fps,
-                    }
-                )
+    #     # Create a directory for the video, which is a 15 second clip
+    #     os.makedirs(captions_path, exist_ok=True)
 
-        with open(f"{captions_path}/captions.json", "w") as f:
-            json.dump(results, f)
+    #     frames_chunked, frame_ids_chunked, fps = load_frames(
+    #         video_path=video_path,
+    #         num_segments=args.num_segments,
+    #         num_frames=args.num_frames,
+    #         val_transform=val_transform,
+    #         jitter=False,
+    #     )
 
-        wandb.log({"total_videos": len(video_paths)})
+    #     results = []
+
+    #     with torch.no_grad():
+    #         for i, frames_chunk in enumerate(frames_chunked):
+    #             frames_chunk = frames_chunk.cuda(non_blocking=True)
+
+    #             image_features = model.encode_image(frames_chunk)
+
+    #             generated_text_ids, _ = model.generate(
+    #                 image_features,
+    #                 tokenizer,
+    #                 target=None,
+    #                 max_text_length=args.max_text_length,
+    #                 top_k=args.top_k,
+    #                 top_p=args.top_p,
+    #                 num_return_sequences=args.num_return_sequences,
+    #                 temperature=args.temperature,
+    #                 early_stopping=args.early_stopping,
+    #             )
+
+    #             generated_text_strs = generate_text(
+    #                 generated_text_ids, tokenizer, args.num_return_sequences
+    #             )
+
+    #             results.append(
+    #                 {
+    #                     "chunk_id": i,
+    #                     "generated_text_strs": generated_text_strs,
+    #                     "frame_ids": frame_ids_chunked[i].tolist(),
+    #                     "timestamps": [
+    #                         frame_id / fps for frame_id in frame_ids_chunked[i].tolist()
+    #                     ],  # Convert frame ids to timestamps
+    #                     "fps": fps,
+    #                 }
+    #             )
+
+    #     with open(f"{captions_path}/captions.json", "w") as f:
+    #         json.dump(results, f)
+
+    #     wandb.log({"total_videos": len(video_paths)})
 
 
 def get_args_parser():
@@ -213,6 +288,9 @@ def get_args_parser():
     parser.add_argument("--wandb-project-name", default="Thesis", type=str)
     parser.add_argument("--wandb-run-name", default=None, type=str, required=True)
     parser.add_argument("--wandb-log-video", action="store_true")
+
+    parser.add_argument("--batch-size", default=4, type=int)
+    parser.add_argument("--num-workers", default=4, type=int)
 
     parser.add_argument(
         "--video-path-root",
