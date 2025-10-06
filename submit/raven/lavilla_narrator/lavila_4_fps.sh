@@ -5,14 +5,14 @@
 
 #SBATCH --job-name lavila_narrator
 
-#SBATCH --nodes=1
+#SBATCH --nodes=16
 #SBATCH --ntasks-per-node=1
 
-#SBATCH --gres=gpu:1
-#SBATCH --mem=120000
+#SBATCH --gres=gpu:4
 #SBATCH --constraint="gpu"
+#SBATCH --cpus-per-task=72
 
-#SBATCH --time=00:29:59
+#SBATCH --time=23:59:59
 
 module purge
 module load anaconda/3/2023.03
@@ -24,7 +24,7 @@ export MASTER_PORT=$((12000 + $RANDOM % 20000))
 export MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 
 # GPU visibility and CUDA settings
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 # Debug: Print GPU and node information
 echo "Job running on nodes: $SLURM_JOB_NODELIST"
@@ -33,7 +33,7 @@ echo "GPUs per node: $SLURM_GPUS_ON_NODE"
 
 cd /u/dduka/work/projects/Thesis/AVION
 
-RUN_NAME=LAVILA_NARRATOR
+RUN_NAME=LAVILA_NARRATOR_4_FPS_64_GPUS
 EXP_PATH=/ptmp/dduka/work/training_metadata/avion/$RUN_NAME
 
 mkdir -p $EXP_PATH
@@ -41,10 +41,15 @@ mkdir -p $EXP_PATH
 export PYTHONPATH=.:third_party/decord/python/
 
 nvidia-smi
-    
-torchrun \
-    --nproc_per_node=1 \
+
+srun --cpu_bind=v --accel-bind=gn torchrun \
+    --nproc_per_node=4 \
+    --nnodes=$SLURM_NNODES \
+    --node_rank=$SLURM_NODEID \
+    --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
+    --rdzv_backend=c10d \
     second_party/lavilla_narrator/main.py \
     --wandb-run-name $RUN_NAME \
     --num-segments 60 \
     --num-frames 4 \
+    --distributed \
