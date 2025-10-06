@@ -138,26 +138,6 @@ def load_frames(video_path, num_segments, num_frames, val_transform, jitter=Fals
 
     return frames_chunked, frame_ids_chunked, fps
 
-
-def load_all_video_and_captions_paths(root_dir):
-    video_paths = []
-    for dirpath, _, filenames in os.walk(root_dir):
-        for name in filenames:
-            if name.lower().endswith(".mp4"):
-                video_paths.append(os.path.abspath(os.path.join(dirpath, name)))
-
-    # TODO: Maybe remove this hardcoded path later
-    captions_paths = [
-        path.replace(
-            "/video_320px_15sec/",
-            f"/video_320px_15sec/lavila_captions_num_frames_{args.num_frames}/",
-        )
-        for path in video_paths
-    ]
-
-    return video_paths, captions_paths
-
-
 def custom_collate_fn(batch):
     # batch: list of dicts from your dataset __getitem__
     # {
