@@ -2,8 +2,6 @@ import torch
 import decord
 import numpy as np
 import os
-import json
-
 
 def get_frame_ids(start_frame, end_frame, num_segments=32, jitter=True):
     """
@@ -99,14 +97,6 @@ class VideoNarratorDataset(torch.utils.data.Dataset):
 
     def _load_samples(self):
         """Load all video paths and their corresponding caption files."""
-        cache_path = os.path.join(self.video_root, "samples.json")
-
-        # If cache exists, just load and return it.
-        if os.path.isfile(cache_path):
-            print(f"Loading samples from {cache_path}")
-            with open(cache_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-
         samples = []
 
         for dirpath, _, filenames in os.walk(self.video_root):
@@ -126,10 +116,6 @@ class VideoNarratorDataset(torch.utils.data.Dataset):
                             "caption_path": caption_path,
                         }
                     )
-
-        with open(cache_path, "w", encoding="utf-8") as f:
-            print(f"Dumping samples to {cache_path}")
-            json.dump(samples, f, ensure_ascii=False, indent=2)
 
         return samples
 
