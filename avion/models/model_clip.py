@@ -6,16 +6,20 @@ import torch.nn.functional as F
 from timm.models.layers import trunc_normal_
 
 from avion.models.transformer import TextTransformer, VisionTransformer
-from avion.models.utils import enable_grad_checkpointing, remap_keys_from_open_clip_to_vit
+from avion.models.utils import (
+    enable_grad_checkpointing,
+    remap_keys_from_open_clip_to_vit,
+)
 
 
 class VideoClassifier(nn.Module):
-    def __init__(self,
-                 vision_model: nn.Module,
-                 dropout: float,
-                 num_classes: int,
-                 **kwargs,
-                 ):
+    def __init__(
+        self,
+        vision_model: nn.Module,
+        dropout: float,
+        num_classes: int,
+        **kwargs,
+    ):
         super().__init__()
         self.visual = vision_model
         self.dropout = nn.Dropout(dropout)
@@ -32,17 +36,18 @@ class VideoClassifier(nn.Module):
             image_embed = image_embed[0]
         logit = self.fc_cls(self.dropout(image_embed))
         return logit
-    
+
 
 class CLIP(nn.Module):
-    def __init__(self,
-                 embed_dim: int,
-                 vision_model: nn.Module,
-                 text_model: nn.Module,
-                 vision_width: int = None,
-                 text_width: int = None,
-                 freeze_temperature=False,
-                 **kwargs
+    def __init__(
+        self,
+        embed_dim: int,
+        vision_model: nn.Module,
+        text_model: nn.Module,
+        vision_width: int = None,
+        text_width: int = None,
+        freeze_temperature=False,
+        **kwargs,
     ):
         super().__init__()
 
@@ -67,9 +72,9 @@ class CLIP(nn.Module):
 
     def init_parameters(self):
         if self.image_projection is not None:
-            trunc_normal_(self.image_projection, std=self.vision_width ** -0.5)
+            trunc_normal_(self.image_projection, std=self.vision_width**-0.5)
         if self.text_projection is not None:
-            trunc_normal_(self.text_projection, std=self.text_width ** -0.5)
+            trunc_normal_(self.text_projection, std=self.text_width**-0.5)
 
     def encode_image(self, image):
         x = self.visual(image)
@@ -87,7 +92,11 @@ class CLIP(nn.Module):
         image_embed = self.encode_image(image)
         text_embed = self.encode_text(text, cast_dtype=image_embed.dtype)
 
-        return F.normalize(image_embed, dim=-1), F.normalize(text_embed, dim=-1), self.logit_scale.exp()
+        return (
+            F.normalize(image_embed, dim=-1),
+            F.normalize(text_embed, dim=-1),
+            self.logit_scale.exp(),
+        )
 
 
 def CLIP_VITB16(
@@ -95,47 +104,72 @@ def CLIP_VITB16(
     use_grad_checkpointing=False,
     use_bidirectional_lm=False,
     context_length=77,
-    patch_dropout=0.,
-    drop_path_rate=0.,
+    patch_dropout=0.0,
+    drop_path_rate=0.0,
     num_frames=1,
     use_fast_conv1=False,
     use_flash_attn=False,
     project_embed_dim=512,
-    pretrain_zoo='openai',
+    pretrain_zoo="openai",
     pretrain_path=None,
-    **kwargs
+    **kwargs,
 ):
     # vision_model = timm.create_model('vit_base_patch16_224', num_classes=0)
     vision_model = VisionTransformer(
-        224, 16, 768, 12, 12, 4,
-        output_dim=project_embed_dim, patch_dropout=patch_dropout,
+        224,
+        16,
+        768,
+        12,
+        12,
+        4,
+        output_dim=project_embed_dim,
+        patch_dropout=patch_dropout,
         drop_path_rate=drop_path_rate,
         num_frames=num_frames,
         use_fast_conv1=use_fast_conv1,
         use_flash_attn=use_flash_attn,
     )
-    text_model = TextTransformer(context_length=context_length, vocab_size=49408, width=512, heads=8, layers=12, output_dim=project_embed_dim, causal_mask=not use_bidirectional_lm)
+    text_model = TextTransformer(
+        context_length=context_length,
+        vocab_size=49408,
+        width=512,
+        heads=8,
+        layers=12,
+        output_dim=project_embed_dim,
+        causal_mask=not use_bidirectional_lm,
+    )
     enable_grad_checkpointing(vision_model, use_grad_checkpointing)
     enable_grad_checkpointing(text_model, use_grad_checkpointing)
-    model = CLIP(embed_dim=project_embed_dim, vision_model=vision_model, text_model=text_model, freeze_temperature=freeze_temperature)
+    model = CLIP(
+        embed_dim=project_embed_dim,
+        vision_model=vision_model,
+        text_model=text_model,
+        freeze_temperature=freeze_temperature,
+    )
 
     if pretrain_zoo == "openai":
         print("=> loading openai model")
-        clip_model, _ = clip.load('ViT-B/16', device='cpu')
+        clip_model, _ = clip.load("ViT-B/16", device="cpu")
         remapped_state_dict = remap_keys_from_open_clip_to_vit(
             clip_model.state_dict(),
             use_fast_conv1=use_fast_conv1,
             use_flash_attn=use_flash_attn,
         )
-        missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=False)
+        missing_keys, unexpected_keys = model.load_state_dict(
+            remapped_state_dict, strict=False
+        )
         print("missing_keys: ", missing_keys)
         print("unexpected_keys: ", unexpected_keys)
     elif pretrain_zoo == "open_clip":
         assert pretrain_path is not None
         state_dict = torch.load(pretrain_path)
         print("=> loading open_clip model")
-        remapped_state_dict = remap_keys_from_open_clip_to_vit(state_dict, use_fast_conv1=use_fast_conv1, use_flash_attn=use_flash_attn)
-        missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=False)
+        remapped_state_dict = remap_keys_from_open_clip_to_vit(
+            state_dict, use_fast_conv1=use_fast_conv1, use_flash_attn=use_flash_attn
+        )
+        missing_keys, unexpected_keys = model.load_state_dict(
+            remapped_state_dict, strict=False
+        )
         print("missing_keys: ", missing_keys)
         print("unexpected_keys: ", unexpected_keys)
     else:
@@ -149,49 +183,75 @@ def CLIP_VITL14(
     use_bidirectional_lm=False,
     context_length=77,
     vocab_size=49408,
-    patch_dropout=0.,
-    drop_path_rate=0.,
+    patch_dropout=0.0,
+    drop_path_rate=0.0,
     num_frames=1,
     use_fast_conv1=False,
     use_flash_attn=False,
     project_embed_dim=512,
-    pretrain_zoo='openai',
+    pretrain_zoo="openai",
     pretrain_path=None,
-    **kwargs
+    **kwargs,
 ):
     # vision_model = timm.create_model('vit_base_patch16_224', num_classes=0)
     vision_model = VisionTransformer(
-        224, 14, 1024, 24, 16, 4,
-        output_dim=project_embed_dim, patch_dropout=patch_dropout,
+        224,
+        14,
+        1024,
+        24,
+        16,
+        4,
+        output_dim=project_embed_dim,
+        patch_dropout=patch_dropout,
         drop_path_rate=drop_path_rate,
         num_frames=num_frames,
         use_fast_conv1=use_fast_conv1,
         use_flash_attn=use_flash_attn,
     )
-    text_model = TextTransformer(context_length=context_length, vocab_size=vocab_size, width=768, heads=12, layers=12, output_dim=project_embed_dim, causal_mask=not use_bidirectional_lm)
+    text_model = TextTransformer(
+        context_length=context_length,
+        vocab_size=vocab_size,
+        width=768,
+        heads=12,
+        layers=12,
+        output_dim=project_embed_dim,
+        causal_mask=not use_bidirectional_lm,
+    )
     enable_grad_checkpointing(vision_model, use_grad_checkpointing)
     enable_grad_checkpointing(text_model, use_grad_checkpointing)
-    model = CLIP(embed_dim=project_embed_dim, vision_model=vision_model, text_model=text_model, freeze_temperature=freeze_temperature)
+    model = CLIP(
+        embed_dim=project_embed_dim,
+        vision_model=vision_model,
+        text_model=text_model,
+        freeze_temperature=freeze_temperature,
+    )
 
     if pretrain_zoo == "openai":
         print("=> loading openai model")
-        clip_model, _ = clip.load('ViT-L/14', device='cpu')
+        clip_model, _ = clip.load("ViT-L/14", device="cpu")
         remapped_state_dict = remap_keys_from_open_clip_to_vit(
-            clip_model.state_dict(), 24,
+            clip_model.state_dict(),
+            24,
             context_length=context_length,
             vocab_size=vocab_size,
             use_fast_conv1=use_fast_conv1,
             use_flash_attn=use_flash_attn,
         )
-        missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=False)
+        missing_keys, unexpected_keys = model.load_state_dict(
+            remapped_state_dict, strict=False
+        )
         print("missing_keys: ", missing_keys)
         print("unexpected_keys: ", unexpected_keys)
     elif pretrain_zoo == "open_clip":
         assert pretrain_path is not None
         state_dict = torch.load(pretrain_path)
         print("=> loading open_clip model")
-        remapped_state_dict = remap_keys_from_open_clip_to_vit(state_dict, use_flash_attn=use_flash_attn)
-        missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=False)
+        remapped_state_dict = remap_keys_from_open_clip_to_vit(
+            state_dict, use_flash_attn=use_flash_attn
+        )
+        missing_keys, unexpected_keys = model.load_state_dict(
+            remapped_state_dict, strict=False
+        )
         print("missing_keys: ", missing_keys)
         print("unexpected_keys: ", unexpected_keys)
     else:
@@ -205,49 +265,75 @@ def CLIP_VITL14_336PX(
     use_bidirectional_lm=False,
     context_length=77,
     vocab_size=49408,
-    patch_dropout=0.,
-    drop_path_rate=0.,
+    patch_dropout=0.0,
+    drop_path_rate=0.0,
     num_frames=1,
     use_fast_conv1=False,
     use_flash_attn=False,
     project_embed_dim=512,
-    pretrain_zoo='openai',
+    pretrain_zoo="openai",
     pretrain_path=None,
-    **kwargs
+    **kwargs,
 ):
     # vision_model = timm.create_model('vit_base_patch16_224', num_classes=0)
     vision_model = VisionTransformer(
-        336, 14, 1024, 24, 16, 4,
-        output_dim=project_embed_dim, patch_dropout=patch_dropout,
+        336,
+        14,
+        1024,
+        24,
+        16,
+        4,
+        output_dim=project_embed_dim,
+        patch_dropout=patch_dropout,
         drop_path_rate=drop_path_rate,
         num_frames=num_frames,
         use_fast_conv1=use_fast_conv1,
         use_flash_attn=use_flash_attn,
     )
-    text_model = TextTransformer(context_length=context_length, vocab_size=vocab_size, width=768, heads=12, layers=12, output_dim=project_embed_dim, causal_mask=not use_bidirectional_lm)
+    text_model = TextTransformer(
+        context_length=context_length,
+        vocab_size=vocab_size,
+        width=768,
+        heads=12,
+        layers=12,
+        output_dim=project_embed_dim,
+        causal_mask=not use_bidirectional_lm,
+    )
     enable_grad_checkpointing(vision_model, use_grad_checkpointing)
     enable_grad_checkpointing(text_model, use_grad_checkpointing)
-    model = CLIP(embed_dim=project_embed_dim, vision_model=vision_model, text_model=text_model, freeze_temperature=freeze_temperature)
+    model = CLIP(
+        embed_dim=project_embed_dim,
+        vision_model=vision_model,
+        text_model=text_model,
+        freeze_temperature=freeze_temperature,
+    )
 
     if pretrain_zoo == "openai":
         print("=> loading openai model")
-        clip_model, _ = clip.load('ViT-L/14@336px', device='cpu')
+        clip_model, _ = clip.load("ViT-L/14@336px", device="cpu")
         remapped_state_dict = remap_keys_from_open_clip_to_vit(
-            clip_model.state_dict(), 24,
+            clip_model.state_dict(),
+            24,
             context_length=context_length,
             vocab_size=vocab_size,
             use_fast_conv1=use_fast_conv1,
             use_flash_attn=use_flash_attn,
         )
-        missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=False)
+        missing_keys, unexpected_keys = model.load_state_dict(
+            remapped_state_dict, strict=False
+        )
         print("missing_keys: ", missing_keys)
         print("unexpected_keys: ", unexpected_keys)
     elif pretrain_zoo == "open_clip":
         assert pretrain_path is not None
         state_dict = torch.load(pretrain_path)
         print("=> loading open_clip model")
-        remapped_state_dict = remap_keys_from_open_clip_to_vit(state_dict, use_flash_attn=use_flash_attn)
-        missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=False)
+        remapped_state_dict = remap_keys_from_open_clip_to_vit(
+            state_dict, use_flash_attn=use_flash_attn
+        )
+        missing_keys, unexpected_keys = model.load_state_dict(
+            remapped_state_dict, strict=False
+        )
         print("missing_keys: ", missing_keys)
         print("unexpected_keys: ", unexpected_keys)
     else:
