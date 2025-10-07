@@ -138,6 +138,7 @@ def load_frames(video_path, num_segments, num_frames, val_transform, jitter=Fals
 
     return frames_chunked, frame_ids_chunked, fps
 
+
 def custom_collate_fn(batch):
     # batch: list of dicts from your dataset __getitem__
     # {
@@ -294,6 +295,9 @@ def main(args):
             # Log progress only on main process
             if dist_utils.is_main_process():
                 wandb.log({"progress": i / len(dataloader)})
+
+        if i % 10 == 0 and i > 0:
+            torch.cuda.empty_cache()
 
 
 def get_args_parser():
