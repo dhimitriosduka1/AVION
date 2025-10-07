@@ -33,7 +33,7 @@ echo "GPUs per node: $SLURM_GPUS_ON_NODE"
 
 cd /u/dduka/work/projects/Thesis/AVION
 
-RUN_NAME=LAVILA_NARRATOR_4_FPS_64_GPUS
+RUN_NAME=LAVILA_NARRATOR_4_FPS_64_GPUS_BATCH_2
 EXP_PATH=/ptmp/dduka/work/training_metadata/avion/$RUN_NAME
 
 mkdir -p $EXP_PATH
@@ -53,3 +53,4 @@ srun --cpu_bind=v --accel-bind=gn torchrun \
     --num-segments 60 \
     --num-frames 4 \
     --distributed \
+    --batch-size 2 \
