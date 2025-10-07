@@ -581,7 +581,10 @@ def main(args):
     print("=> beginning training")
     best_acc1 = 0.0
     for epoch in range(args.start_epoch, args.epochs):
-
+        
+        if args.distributed:
+            train_loader.sampler.set_epoch(epoch)
+        
         # train for one epoch
         train_stats = train(
             train_loader,
