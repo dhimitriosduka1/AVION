@@ -121,24 +121,6 @@ def generate_text(
     return generated_text_strs
 
 
-def load_frames(video_path, num_segments, num_frames, val_transform, jitter=False):
-    original_frames, frame_ids, fps = get_frames(
-        video_path=video_path, num_segments=num_segments, jitter=jitter
-    )
-
-    assert num_segments // num_frames == 15
-    number_of_chunks = num_segments // num_frames
-
-    original_frames_chunked = original_frames.chunk(number_of_chunks)
-    frame_ids_chunked = np.array_split(frame_ids, number_of_chunks)
-
-    frames_chunked = []
-    for chunk in original_frames_chunked:
-        frames_chunked.append(val_transform(chunk).unsqueeze(0))
-
-    return frames_chunked, frame_ids_chunked, fps
-
-
 def custom_collate_fn(batch):
     # batch: list of dicts from your dataset __getitem__
     # {
@@ -147,7 +129,15 @@ def custom_collate_fn(batch):
     #   "frames_ids": List[int] (or Tensor),
     #   "fps": float/int,
     #   "caption_path": str,
+    #   "is_dummy_frame": bool,
     # }
+
+    # Filter out samples with dummy frames
+    batch = [b for b in batch if not b.get("is_dummy_frame", False)]
+
+    # Handle case where all samples in the batch were filtered out
+    if len(batch) == 0:
+        return None
 
     out = {}
 
@@ -196,7 +186,7 @@ def main(args):
 
     dataset = VideoNarratorDataset(
         video_root=args.video_path_root,
-        caption_suffix=f"lavila_captions_num_frames_{args.num_frames}",
+        caption_suffix=f"lavila_captions_num_frames_{args.num_frames}/temperature_{args.temperature}",
         num_frames=args.num_frames,
         num_segments=args.num_segments,
         val_transform=val_transform,
@@ -226,6 +216,10 @@ def main(args):
     print(f"len(dataloader) = {len(dataloader)}")
 
     for i, sample in enumerate(dataloader):
+        # Skip None batches (when all samples had dummy frames)
+        if sample is None:
+            continue
+
         frames = sample["frames"]
         video_path = sample["video_path"]
         caption_path = sample["caption_path"]
