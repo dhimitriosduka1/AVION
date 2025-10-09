@@ -58,15 +58,26 @@ def get_frames(video_path, num_segments, jitter=False):
     Returns:
         frames: frames from the video
         frame_ids: frame ids used to load the frames
+        fps: frames per second
+        is_dummy_frame: boolean flag indicating if dummy frames were returned due to an error
     """
-    video_reader = decord.VideoReader(video_path)
+    try:
+        video_reader = decord.VideoReader(video_path)
+    except (decord.DECORDError, Exception) as error:
+        print(f"Error loading video {video_path}: {error}")
+        print(f"Returning dummy frames for video: {video_path}")
+        # Return dummy frames, frame_ids, fps, and is_dummy_frame=True
+        dummy_frames = torch.stack([torch.zeros((240, 320, 3)) for _ in range(num_segments)], dim=0)
+        dummy_frame_ids = list(range(num_segments))
+        dummy_fps = 30.0
+        return dummy_frames, dummy_frame_ids, dummy_fps, True
 
     frame_ids = get_frame_ids(
         0, len(video_reader), num_segments=num_segments, jitter=jitter
     )
 
     fps = video_reader.get_avg_fps()
-    return video_loader_by_frames(video_reader, frame_ids), frame_ids, fps
+    return video_loader_by_frames(video_reader, frame_ids), frame_ids, fps, False
 
 
 class VideoNarratorDataset(torch.utils.data.Dataset):
@@ -130,7 +141,7 @@ class VideoNarratorDataset(torch.utils.data.Dataset):
         return samples
 
     def _load_frames(self, video_path):
-        original_frames, frame_ids, fps = get_frames(
+        original_frames, frame_ids, fps, is_dummy_frame = get_frames(
             video_path=video_path, num_segments=self.num_segments, jitter=self.jitter
         )
 
@@ -141,7 +152,7 @@ class VideoNarratorDataset(torch.utils.data.Dataset):
         for chunk in original_frames_chunked:
             frames_chunked.append(self.val_transform(chunk))
 
-        return frames_chunked, frame_ids_chunked, fps
+        return frames_chunked, frame_ids_chunked, fps, is_dummy_frame
 
     def __len__(self):
         return len(self.samples)
@@ -159,7 +170,7 @@ class VideoNarratorDataset(torch.utils.data.Dataset):
         video_path = sample["video_path"]
         caption_path = sample["caption_path"]
 
-        frames, frame_ids, fps = self._load_frames(video_path)
+        frames, frame_ids, fps, is_dummy_frame = self._load_frames(video_path)
 
         return {
             "video_path": video_path,
@@ -167,4 +178,5 @@ class VideoNarratorDataset(torch.utils.data.Dataset):
             "frames_ids": torch.tensor(np.array(frame_ids)),
             "fps": torch.tensor(np.array(fps)),
             "caption_path": caption_path,
+            "is_dummy_frame": is_dummy_frame,
         }
