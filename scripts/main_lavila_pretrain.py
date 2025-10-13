@@ -228,6 +228,12 @@ def get_args_parser():
         help="If > 0, will skip to this batch in the training dataloader",
     )
 
+    parser.add_argument(
+        "--enable-train-loader-shuffle",
+        action="store_true",
+        help="If true, will enable the train loader shuffle",
+    )
+
     return parser
 
 
@@ -582,7 +588,7 @@ def main(args):
     best_acc1 = 0.0
     for epoch in range(args.start_epoch, args.epochs):
         
-        if args.distributed:
+        if args.distributed and args.enable_train_loader_shuffle:
             train_loader.sampler.set_epoch(epoch)
         
         # train for one epoch
