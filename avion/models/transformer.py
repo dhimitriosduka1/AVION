@@ -112,7 +112,13 @@ class ResidualAttentionBlock(nn.Module):
         if not use_flash_attn:
             self.attn = nn.MultiheadAttention(d_model, n_head, dropout=attn_drop)
         else:
-            self.attn = FlashMHA(d_model, n_head, cross_attn=False, bias=True, dropout=attn_drop, use_flash_attn=True)
+            try:
+                self.attn = FlashMHA(d_model, n_head, cross_attn=False, bias=True, dropout=attn_drop, use_flash_attn=True)
+            except TypeError:
+                # For flash attn 2.8.3
+                print("Using qkv_proj_bias and out_proj_bias instead of bias")
+                self.attn = FlashMHA(d_model, n_head, cross_attn=False, qkv_proj_bias=True, out_proj_bias=True, dropout=attn_drop, use_flash_attn=True)
+        
         self.ls_1 = LayerScale(d_model, ls_init_value) if ls_init_value is not None else nn.Identity()
 
         self.ln_2 = norm_layer(d_model)
