@@ -2,7 +2,7 @@ import torch
 import argparse
 import open_clip
 from tqdm import tqdm
-from data.datasets import VideoMetadataDataset
+from second_party.text_embedder.data.datasets import VideoMetadataDataset
 
 
 def get_args_parser():
@@ -16,7 +16,8 @@ def get_args_parser():
 
 
 def load_model_and_tokenizer(model_name, pretrained, device):
-    model, _, __ = open_clip.create_model_and_transforms(model_name, pretrained)
+    model, _, __ = open_clip.create_model_and_transforms(
+        model_name, pretrained)
     model.eval()
     model.to(device)
 
@@ -26,15 +27,14 @@ def load_model_and_tokenizer(model_name, pretrained, device):
 
 @torch.no_grad()
 @torch.autocast("cuda")
-def encode_text(model, text):
+def encode_text(model, text, normalize=True):
     # The text is already tokenized
-    text_features = model.encode_text(text)
-    text_features /= text_features.norm(dim=-1, keepdim=True)
-    return text_features
+    return model.encode_text(text, normalize=normalize)
 
 
 def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
     # Load model and tokenizer
     model, tokenizer = load_model_and_tokenizer(
@@ -42,22 +42,29 @@ def main(args):
     )
 
     # Load video metadata dataset
-    video_metadata_dataset = VideoMetadataDataset(args.video_metadata_path, tokenizer)
+    print(f"Loaded model and tokenizer")
+    video_metadata_dataset = VideoMetadataDataset(
+        args.video_metadata_path, tokenizer)
+    print(f"Created video metadata dataset")
 
     # Create the dataloader
+    print(f"Creating dataloader")
     dataloader = torch.utils.data.DataLoader(
         video_metadata_dataset,
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
     )
+    print(f"Created dataloader")
 
     for batch in tqdm(dataloader, desc="Encoding text"):
         caption, frequency = batch
+
+        caption = caption.to(device)
+
         text_features = encode_text(model, caption)
-        print(text_features)
 
-
+# Run the script using: python3 -m second_party.text_embedder.models.clip.clip
 if __name__ == "__main__":
     args = get_args_parser().parse_args()
     main(args)

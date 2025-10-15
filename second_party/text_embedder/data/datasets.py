@@ -56,8 +56,9 @@ class VideoMetadataDataset(Dataset):
 
         caption = metadata["text"]
 
-        # Make sure this is okay
-        caption = self.tokenizer(caption)
+        # Tokenize as a single example and remove the leading batch dim so
+        # DataLoader batching produces shape [batch, context_length]
+        caption = self.tokenizer([caption])[0]
 
         frequency = metadata["frequency"]
 
