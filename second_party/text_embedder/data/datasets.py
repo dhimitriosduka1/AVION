@@ -1,57 +1,64 @@
 import json
-from pathlib import Path
+import torch
 from torch.utils.data import Dataset
 
 
 class VideoMetadataDataset(Dataset):
-    def __init__(self, metadata_path):
+    """
+    Dataset for loading video metadata.
+    The metadata is a json file with the following structure:
+    {
+        "number_of_total_captions": int,
+        "number_of_unique_captions": int,
+        "percentage_of_unique_captions": float,
+        "unique_captions": [
+            {
+                "text": str,
+                "frequency": int,
+            }
+        ],
+        "preprocess_function": {
+            "source": str,
+        },
+    }
+    """
+
+    def __init__(self, metadata_path, tokenizer):
+        # Assert the file is a json file
+        assert metadata_path.endswith(".json"), "The file must be a json file"
+
         self.metadata_path = metadata_path
-        self.root = Path(self.metadata_path)
+        self.tokenizer = tokenizer
 
-        print(f"Resolving metadata paths")
-        self.metadata_paths = list(self.root.rglob("*.json"))
-        print(f"Found {len(self.metadata_paths)} metadata files")
+        assert tokenizer is not None, "Tokenizer is required"
 
-        self.captions = []
-        for metadata_path in self.metadata_paths:
-            with open(metadata_path, "r") as f:
-                metadata_dict = json.load(f)
+        with open(self.metadata_path, "r") as f:
+            self.metadata = json.load(f)
 
-            for captions in metadata_dict["metadata"]:
-                cleaned = [c.rstrip(". \t\r\n") for c in captions["captions"]]
-                self.captions.extend(cleaned)
+        self.number_of_total_captions = self.metadata["number_of_total_captions"]
+        self.number_of_unique_captions = self.metadata["number_of_unique_captions"]
+        self.percentage_of_unique_captions = self.metadata[
+            "percentage_of_unique_captions"
+        ]
+        self.unique_captions = self.metadata["unique_captions"]
+        self.preprocess_function = self.metadata["preprocess_function"]
 
-        captions_length = len(self.captions)
-        unique_captions_length = len(list(set(self.captions)))
-
-        print(f"All captions: {captions_length}")
-        print(f"Unique captions: {unique_captions_length}")
-
-        print(
-            f"Percentage of captions that are unique: {unique_captions_length / captions_length}"
-        )
+        print(f"Number of total captions: {self.number_of_total_captions}")
+        print(f"Number of unique captions: {self.number_of_unique_captions}")
+        print(f"Percentage of unique captions: {self.percentage_of_unique_captions}")
+        print(f"Preprocess function: {self.preprocess_function}")
 
     def __len__(self):
-        return len(self.metadata_paths)
+        return len(self.unique_captions)
 
     def __getitem__(self, idx):
-        metadata_path = self.metadata_paths[idx]
+        metadata = self.unique_captions[idx]
 
-        with open(metadata_path, "r") as f:
-            metadata_dict = json.load(f)
+        caption = metadata["text"]
 
-        metadata = metadata_dict["metadata"]
+        # Make sure this is okay
+        caption = self.tokenizer(caption)
 
-        return metadata
+        frequency = metadata["frequency"]
 
-
-if __name__ == "__main__":
-    import time
-
-    start_time = time.time()
-    dataset = VideoMetadataDataset(
-        metadata_path="/ptmp/dduka/databases/ego4d/video_320px_15sec/lavila_captions_num_frames_4/temperature_1.0"
-    )
-    end_time = time.time()
-
-    print(f"Time taken: {end_time - start_time} seconds")
+        return caption, torch.tensor(frequency)
