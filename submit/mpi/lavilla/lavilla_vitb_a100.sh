@@ -8,12 +8,13 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 
-#SBATCH --partition gpu24
-#SBATCH --gres=gpu:4
+#SBATCH --partition gpu22
+#SBATCH --gres=gpu:a100:4
 
-#SBATCH --time=23:59:59
+#SBATCH --time=11:59:59
+#SBATCH --array=1-8%1
 
-micromamba activate avion_h100
+micromamba activate avion_a100
 
 # Set up distributed training environment variables
 export MASTER_PORT=$((12000 + $RANDOM % 20000))
@@ -29,7 +30,7 @@ echo "GPUs per node: $SLURM_GPUS_ON_NODE"
 
 cd /BS/dduka/work/projects/AVION/
 
-RUN_NAME=LAVILA_PRETRAIN_BASELINE_512_4_GPUS_MPI
+RUN_NAME=LAVILA_PRETRAIN_BASELINE_512_4_GPUS_A100_MPI
 EXP_PATH=/BS/dduka/work/training_metadata/avion/$RUN_NAME
 
 mkdir -p $EXP_PATH
