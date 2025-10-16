@@ -88,7 +88,7 @@ def main(args):
     print(f"Esitmated memory usage: {writer.estimated_megabytes():.2f} MB")
 
     index_array = {"captions": {}, "metadata": {
-        **args
+        **args.__dict__
     }}
 
     for batch_idx, batch in enumerate(tqdm(dataloader, desc="Encoding text")):
