@@ -1,17 +1,15 @@
 import os
 import torch
 import argparse
+import open_clip
 import numpy as np
 import wandb
 import json
-import urllib.request
 
 from tqdm import tqdm
 from second_party.text_embedder.data.datasets import VideoMetadataDataset
 from second_party.text_embedder.common.mmap import MemmapWriter
 
-from transformers import GPT2LMHeadModel
-from second_party.lavilla_narrator.lavila.models.tokenizer import MyGPT2Tokenizer
 
 def get_args_parser():
     parser = argparse.ArgumentParser()
@@ -26,27 +24,11 @@ def get_args_parser():
 
 
 def load_model_and_tokenizer(model_name, pretrained, device):
-    ckpt_path = os.path.join(args.checkpoint_root, args.model)
-
-    os.makedirs(args.checkpoint_root, exist_ok=True)
-
-    if not os.path.exists(ckpt_path):
-        print("Downloading model to {}".format(ckpt_path))
-        urllib.request.urlretrieve(
-            args.model_url.format(args.model),
-            ckpt_path,
-        )
-
-    ckpt = torch.load(ckpt_path, map_location="cpu")
-
-    model = GPT2LMHeadModel.from_pretrained(
-        "gpt2-xl",
-        use_cache=False,
-    )
+    model, _, __ = open_clip.create_model_and_transforms(model_name, pretrained)
     model.eval()
     model.to(device)
 
-    tokenizer = MyGPT2Tokenizer(args.tokenizer_name, add_bos=True)
+    tokenizer = open_clip.get_tokenizer(model_name)
 
     with torch.no_grad():
         dim = model.encode_text(tokenizer(["foo"]).to(device)).shape[-1]
@@ -66,7 +48,7 @@ def main(args):
     wandb.init(
         project="Thesis",
         name=f"{args.model_name}_{args.pretrained}_{args.video_metadata_path.split('/')[-2]}",
-        args=args,
+        config={**args.__dict__},
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

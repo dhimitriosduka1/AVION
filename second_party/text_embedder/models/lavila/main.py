@@ -1,21 +1,45 @@
 import os
 import torch
 import argparse
-import open_clip
 import numpy as np
 import wandb
 import json
+import urllib.request
+import functools
+import copy
+from collections import OrderedDict
 
 from tqdm import tqdm
 from second_party.text_embedder.data.datasets import VideoMetadataDataset
 from second_party.text_embedder.common.mmap import MemmapWriter
 
+from transformers import GPT2LMHeadModel
+from second_party.lavilla_narrator.lavila.models.tokenizer import MyGPT2Tokenizer
+from second_party.lavilla_narrator.lavila.models.gpt2_gated import (
+    GPT2LMHeadModel as GatedGPT2LMHeadModel,
+)
+
 
 def get_args_parser():
     parser = argparse.ArgumentParser()
+    # Model
+    parser.add_argument(
+        "--checkpoint-root",
+        default="/ptmp/dduka/work/training_metadata/lavilla/checkpoints",
+        type=str,
+    )
+    parser.add_argument(
+        "--model-url",
+        default="https://dl.fbaipublicfiles.com/lavila/checkpoints/narrator/{}",
+        type=str,
+    )
+    parser.add_argument(
+        "--model",
+        default="vclm_openai_timesformer_large_336px_gpt2_xl.pt_ego4d.jobid_246897.ep_0003.md5sum_443263.pth",
+        type=str,
+    )
+    parser.add_argument("--gated-xattn", type=bool, default=True)
     parser.add_argument("--output-path", type=str, required=True)
-    parser.add_argument("--model-name", type=str, default="ViT-B-32")
-    parser.add_argument("--pretrained", type=str, default="laion2b_s34b_b79k")
     parser.add_argument("--video-metadata-path", type=str, required=True)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=1)
@@ -23,12 +47,72 @@ def get_args_parser():
     return parser
 
 
-def load_model_and_tokenizer(model_name, pretrained, device):
-    model, _, __ = open_clip.create_model_and_transforms(model_name, pretrained)
-    model.eval()
-    model.to(device)
+def augment_gpt2_config(config, cross_attn_freq=1, gated_xattn=True):
+    new_config = copy.deepcopy(config)
+    new_config.add_cross_attention = True
+    new_config.add_cross_attention_freq = cross_attn_freq
+    new_config.is_tanh_gating = gated_xattn
+    return new_config
 
-    tokenizer = open_clip.get_tokenizer(model_name)
+
+def rgetattr(obj, attr, *args):
+    def _getattr(obj, attr):
+        return getattr(obj, attr, *args)
+
+    return functools.reduce(_getattr, [obj] + attr.split("."))
+
+
+def rsetattr(obj, attr, val):
+    pre, _, post = attr.rpartition(".")
+    return setattr(rgetattr(obj, pre) if pre else obj, post, val)
+
+
+def load_model_and_tokenizer(args, device):
+    ckpt_path = os.path.join(args.checkpoint_root, args.model)
+
+    os.makedirs(args.checkpoint_root, exist_ok=True)
+
+    if not os.path.exists(ckpt_path):
+        print("Downloading model to {}".format(ckpt_path))
+        urllib.request.urlretrieve(
+            args.model_url.format(args.model),
+            ckpt_path,
+        )
+
+    ckpt = torch.load(ckpt_path, map_location="cpu")
+
+    print(f"Checkpoint state_dict keys: {ckpt['state_dict'].keys()}")
+
+    state_dict = OrderedDict()
+    for k, v in ckpt["state_dict"].items():
+        state_dict[k.replace("module.", "")] = v
+
+    text_state_dict = {
+        k.replace("text_decoder.", "", 1): v
+        for k, v in state_dict.items()
+        if k.startswith("text_decoder.")
+    }
+
+    gpt2 = GPT2LMHeadModel.from_pretrained(
+        "gpt2-xl",
+        use_cache=False,
+    )
+
+    new_config = augment_gpt2_config(
+        gpt2.config, cross_attn_freq=3, gated_xattn=args.gated_xattn
+    )
+    
+    model = GatedGPT2LMHeadModel(new_config)
+
+    for n, p in gpt2.named_parameters():
+        rsetattr(model, n + ".data", p.data)
+
+    missing, unexpected = model.load_state_dict(text_state_dict, strict=True)
+    print(
+        f"Loaded text weights. Missing={missing[:3]}... Unexpected={unexpected[:3]}..."
+    )
+
+    tokenizer = MyGPT2Tokenizer(args.tokenizer_name, add_bos=True)
 
     with torch.no_grad():
         dim = model.encode_text(tokenizer(["foo"]).to(device)).shape[-1]
@@ -44,20 +128,19 @@ def encode_text(model, text, normalize=True):
     return model.encode_text(text, normalize=normalize)
 
 
+# NOTE: Only the loading of the model is done!!! Take care of the rest!!!
 def main(args):
-    wandb.init(
-        project="Thesis",
-        name=f"{args.model_name}_{args.pretrained}_{args.video_metadata_path.split('/')[-2]}",
-        args=args,
-    )
+    # wandb.init(
+    #     project="Thesis",
+    #     name=f"{args.model}_{args.video_metadata_path.split('/')[-2]}",
+    #     config={**args.__dict__},
+    # )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # Load model and tokenizer
-    model, tokenizer, dim = load_model_and_tokenizer(
-        args.model_name, args.pretrained, device
-    )
+    model, tokenizer, dim = load_model_and_tokenizer(args, device)
 
     # Load video metadata dataset
     print(f"Loaded model and tokenizer")
