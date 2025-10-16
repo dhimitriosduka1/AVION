@@ -1,17 +1,24 @@
+import os
 import torch
 import argparse
 import open_clip
+import numpy as np
+import json
+
 from tqdm import tqdm
 from second_party.text_embedder.data.datasets import VideoMetadataDataset
+from second_party.text_embedder.common.mmap import MemmapWriter
 
 
 def get_args_parser():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--output-path", type=str, required=True)
     parser.add_argument("--model-name", type=str, default="ViT-B-32")
     parser.add_argument("--pretrained", type=str, default="laion2b_s34b_b79k")
     parser.add_argument("--video-metadata-path", type=str, required=True)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=1)
+    parser.add_argument("--flush-frequency", type=int, default=10)
     return parser
 
 
@@ -22,7 +29,11 @@ def load_model_and_tokenizer(model_name, pretrained, device):
     model.to(device)
 
     tokenizer = open_clip.get_tokenizer(model_name)
-    return model, tokenizer
+
+    dim = model.encode_text(tokenizer(["foo"]).to(device)).shape[-1]
+    print(f"Dimension of the text embeddings: {dim}")
+
+    return model, tokenizer, dim
 
 
 @torch.no_grad()
@@ -37,7 +48,7 @@ def main(args):
     print(f"Using device: {device}")
 
     # Load model and tokenizer
-    model, tokenizer = load_model_and_tokenizer(
+    model, tokenizer, dim = load_model_and_tokenizer(
         args.model_name, args.pretrained, device
     )
 
@@ -57,12 +68,47 @@ def main(args):
     )
     print(f"Created dataloader")
 
-    for batch in tqdm(dataloader, desc="Encoding text"):
-        caption, frequency = batch
+    output_dir = os.path.join(os.path.dirname(
+        args.output_path), f"{args.model_name}_{args.pretrained}")
+    os.makedirs(output_dir, exist_ok=True)
+
+    index_path = os.path.join(output_dir, "index.json")
+
+    shape = (len(video_metadata_dataset), dim)
+
+    writer = MemmapWriter(
+        output_dir=output_dir,
+        filename="embeddings.memmap",
+        shape=shape,
+        dtype=np.float32,
+        mode='w+',
+        flush_frequency=args.flush_frequency,
+    )
+
+    print(f"Esitmated memory usage: {writer.estimated_megabytes():.2f} MB")
+
+    index_array = {"captions": {}, "metadata": {
+        **args
+    }}
+
+    for batch_idx, batch in enumerate(tqdm(dataloader, desc="Encoding text")):
+        original_caption, caption, frequency = batch["original_caption"], batch["caption"], batch["frequency"]
 
         caption = caption.to(device)
 
-        text_features = encode_text(model, caption)
+        text_features = encode_text(
+            model, caption).detach().float().cpu().numpy()
+
+        for i in range(len(original_caption)):
+            index_array[original_caption[i]] = batch_idx * args.batch_size + i
+
+            writer.write_row(batch_idx * args.batch_size + i, text_features[i])
+
+    writer.flush()
+
+    with open(index_path, "w") as f:
+        json.dump(index_array, f)
+
 
 # Run the script using: python3 -m second_party.text_embedder.models.clip.clip
 if __name__ == "__main__":
