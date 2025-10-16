@@ -3,6 +3,7 @@ import torch
 import argparse
 import open_clip
 import numpy as np
+import wandb
 import json
 
 from tqdm import tqdm
@@ -23,15 +24,15 @@ def get_args_parser():
 
 
 def load_model_and_tokenizer(model_name, pretrained, device):
-    model, _, __ = open_clip.create_model_and_transforms(
-        model_name, pretrained)
+    model, _, __ = open_clip.create_model_and_transforms(model_name, pretrained)
     model.eval()
     model.to(device)
 
     tokenizer = open_clip.get_tokenizer(model_name)
 
-    dim = model.encode_text(tokenizer(["foo"]).to(device)).shape[-1]
-    print(f"Dimension of the text embeddings: {dim}")
+    with torch.no_grad():
+        dim = model.encode_text(tokenizer(["foo"]).to(device)).shape[-1]
+        print(f"Dimension of the text embeddings: {dim}")
 
     return model, tokenizer, dim
 
@@ -44,6 +45,12 @@ def encode_text(model, text, normalize=True):
 
 
 def main(args):
+    wandb.init(
+        project="Thesis",
+        name=f"{args.model_name}_{args.pretrained}_{args.video_metadata_path.split('/')[-2]}",
+        args=args,
+    )
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -54,8 +61,7 @@ def main(args):
 
     # Load video metadata dataset
     print(f"Loaded model and tokenizer")
-    video_metadata_dataset = VideoMetadataDataset(
-        args.video_metadata_path, tokenizer)
+    video_metadata_dataset = VideoMetadataDataset(args.video_metadata_path, tokenizer)
     print(f"Created video metadata dataset")
 
     # Create the dataloader
@@ -68,8 +74,9 @@ def main(args):
     )
     print(f"Created dataloader")
 
-    output_dir = os.path.join(os.path.dirname(
-        args.output_path), f"{args.model_name}_{args.pretrained}")
+    output_dir = os.path.join(
+        os.path.dirname(args.output_path), f"{args.model_name}_{args.pretrained}"
+    )
     os.makedirs(output_dir, exist_ok=True)
 
     index_path = os.path.join(output_dir, "index.json")
@@ -81,28 +88,36 @@ def main(args):
         filename="embeddings.memmap",
         shape=shape,
         dtype=np.float32,
-        mode='w+',
+        mode="w+",
         flush_frequency=args.flush_frequency,
     )
 
-    print(f"Esitmated memory usage: {writer.estimated_megabytes():.2f} MB")
+    print(f"Estimated memory usage: {writer.estimated_megabytes():.2f} MB")
 
-    index_array = {"captions": {}, "metadata": {
-        **args.__dict__
-    }}
+    index_array = {"captions": {}, "metadata": {**args.__dict__}}
 
     for batch_idx, batch in enumerate(tqdm(dataloader, desc="Encoding text")):
-        original_caption, caption, frequency = batch["original_caption"], batch["caption"], batch["frequency"]
+        original_caption, caption, _ = (
+            batch["original_caption"],
+            batch["caption"],
+            batch["frequency"],
+        )
 
         caption = caption.to(device)
 
-        text_features = encode_text(
-            model, caption).detach().float().cpu().numpy()
+        text_features = encode_text(model, caption).detach().float().cpu().numpy()
 
         for i in range(len(original_caption)):
-            index_array[original_caption[i]] = batch_idx * args.batch_size + i
+            global_index = batch_idx * args.batch_size + i
+            index_array["captions"][original_caption[i]] = global_index
 
-            writer.write_row(batch_idx * args.batch_size + i, text_features[i])
+            writer.write_row(global_index, text_features[i])
+
+        wandb.log(
+            {
+                "progress": (batch_idx + 1) / len(dataloader),
+            }
+        )
 
     writer.flush()
 
