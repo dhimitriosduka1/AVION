@@ -11,7 +11,7 @@ from collections import OrderedDict
 
 from tqdm import tqdm
 from second_party.text_embedder.data.datasets import VideoMetadataDataset
-from second_party.text_embedder.common.mmap import MemmapWriter
+from second_party.text_embedder.common.mmap import MemmapUtils
 
 from transformers import GPT2LMHeadModel
 from second_party.lavilla_narrator.lavila.models.tokenizer import MyGPT2Tokenizer
@@ -166,7 +166,7 @@ def main(args):
 
     shape = (len(video_metadata_dataset), dim)
 
-    writer = MemmapWriter(
+    mmap_utils = MemmapUtils(
         output_dir=output_dir,
         filename="embeddings.memmap",
         shape=shape,
@@ -175,7 +175,7 @@ def main(args):
         flush_frequency=args.flush_frequency,
     )
 
-    print(f"Estimated memory usage: {writer.estimated_megabytes():.2f} MB")
+    print(f"Estimated memory usage: {mmap_utils.estimated_megabytes():.2f} MB")
 
     index_array = {"captions": {}, "metadata": {**args.__dict__}}
 
@@ -194,7 +194,7 @@ def main(args):
             global_index = batch_idx * args.batch_size + i
             index_array["captions"][original_caption[i]] = global_index
 
-            writer.write_row(global_index, text_features[i])
+            mmap_utils.write_row(global_index, text_features[i])
 
         wandb.log(
             {
@@ -202,7 +202,7 @@ def main(args):
             }
         )
 
-    writer.flush()
+    mmap_utils.flush()
 
     with open(index_path, "w") as f:
         json.dump(index_array, f)
