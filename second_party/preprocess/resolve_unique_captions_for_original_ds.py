@@ -1,35 +1,21 @@
 import os
-import re
 import json
 import argparse
 import inspect
+import pickle
 from tqdm import tqdm
 from collections import Counter
 from second_party.preprocess.utils import preprocess_captions
 
+
 def main(args):
     # First, resolve all the captions path
-    captions_paths = []
-    for root, dirs, files in tqdm(
-        os.walk(args.root_path), desc="Resolving captions paths"
-    ):
-        for file in files:
-            if file == ("captions.json"):
-                captions_paths.append(os.path.join(root, file))
+    with open(args.root_path, "rb") as f:
+        data = pickle.load(f)
 
-    print(f"Found {len(captions_paths)} captions paths")
-
-    # Load all the captions
     captions = []
-    for captions_path in tqdm(captions_paths, desc="Loading captions"):
-        with open(captions_path, "r") as f:
-            data = json.load(f)
-
-            if "metadata" not in data:
-                continue
-
-            for m in data["metadata"]:
-                captions.extend(preprocess_captions(m["captions"]))
+    for sample in tqdm(data, desc="Processing captions"):
+        captions.extend(preprocess_captions([sample[-1]]))
 
     print(f"Loaded {len(captions)} captions")
 
@@ -56,12 +42,13 @@ def main(args):
             }
         )
 
-    with open(os.path.join(args.root_path, "unique_captions.json"), "w") as f:
+    with open(os.path.join(args.output_path, "unique_captions.json"), "w") as f:
         json.dump(results, f)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--root-path", type=str, required=True)
+    parser.add_argument("--output-path", type=str, required=True)
     args = parser.parse_args()
     main(args)
