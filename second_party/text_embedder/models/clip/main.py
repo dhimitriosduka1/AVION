@@ -77,7 +77,21 @@ def main(args):
     )
     os.makedirs(output_dir, exist_ok=True)
 
-    with SQLiteClient(args.output_path) as client:
+    output_path = os.path.join(output_dir, f"embeddings.sqlite")
+
+    with SQLiteClient(output_path) as client:
+        print(f"Inserting metadata")
+        client.insert_metadata(
+            {
+                "model_name": args.model_name,
+                "pretrained": args.pretrained,
+                "video_metadata_path": args.video_metadata_path,
+                "batch_size": args.batch_size,
+                "num_workers": args.num_workers,
+            }
+        )
+        print(f"Metadata inserted")
+
         results = []
         for batch_idx, batch in enumerate(tqdm(dataloader, desc="Encoding text")):
             original_caption, caption, frequency = (
@@ -110,7 +124,7 @@ def main(args):
 
         print(f"Number of embeddings to be stored: {len(video_metadata_dataset)}")
         print(f"Number of stored embeddings: {client.count_embeddings()}")
-        
+
     print(f"Done")
 
 

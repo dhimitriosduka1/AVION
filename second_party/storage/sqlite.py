@@ -27,6 +27,11 @@ CREATE TABLE IF NOT EXISTS embedding (
   emb       BLOB NOT NULL,
   frequency INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS metadata (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 """
 
 
@@ -82,12 +87,23 @@ class SQLiteClient:
         dtype: Union[np.dtype, str] = np.float32,
     ) -> None:
         conn = self._ensure_conn()
-        payload = [(caption, self._to_blob(emb, dtype=dtype), frequency) for caption, emb, frequency in items]
+        payload = [
+            (caption, self._to_blob(emb, dtype=dtype), frequency)
+            for caption, emb, frequency in items
+        ]
         # BEGIN IMMEDIATE to reduce writer contention and get better throughput
         conn.execute("BEGIN IMMEDIATE")
         conn.executemany(
             "INSERT OR REPLACE INTO embedding(caption, emb, frequency) VALUES (?, ?, ?)",
             payload,
+        )
+        conn.commit()
+
+    def insert_metadata(self, items: Iterable[Tuple[str, str]]) -> None:
+        conn = self._ensure_conn()
+        payload = [(key, value) for key, value in items]
+        conn.executemany(
+            "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)", payload
         )
         conn.commit()
 
