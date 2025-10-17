@@ -80,7 +80,7 @@ def main(args):
 
     embeddings = {}
     for batch_idx, batch in enumerate(tqdm(dataloader, desc="Encoding text")):
-        original_caption, caption, frequency = (
+        original_caption, caption, _ = (
             batch["original_caption"],
             batch["caption"],
             batch["frequency"],
@@ -88,20 +88,17 @@ def main(args):
 
         caption = caption.to(device)
 
-        text_features = encode_text(model, caption).detach().float().cpu().numpy()
+        text_features = encode_text(model, caption).detach().float().cpu()
 
         for i in range(len(original_caption)):
-            embeddings[original_caption[i]] = {
-                "features": text_features[i],
-                "frequency": frequency[i],
-            }
+            embeddings[original_caption[i]] = text_features[i]
 
         wandb.log(
             {
                 "progress": (batch_idx + 1) / len(dataloader),
             }
         )
-
+        
     print(f"Saving embeddings")
     save_file(embeddings, os.path.join(output_dir, f"embeddings.safetensors"))
 
