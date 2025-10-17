@@ -88,7 +88,7 @@ def main(args):
                 "video_metadata_path": args.video_metadata_path,
                 "batch_size": args.batch_size,
                 "num_workers": args.num_workers,
-            }
+            }.items()
         )
         print(f"Metadata inserted")
 
@@ -105,7 +105,7 @@ def main(args):
             text_features = encode_text(model, caption).detach().float().cpu()
 
             for i in range(len(original_caption)):
-                results.append((original_caption[i], text_features[i], frequency))
+                results.append((original_caption[i], text_features[i], frequency.item()))
 
             if batch_idx % 200 == 0 and batch_idx > 0:
                 print(f"Inserting {len(results)} embeddings")

@@ -20,6 +20,9 @@ conda activate open_clip
 
 nvidia-smi
 
+cd /u/dduka/work/projects/Thesis/AVION
+export PYTHONPATH=/u/dduka/work/projects/Thesis/AVION:$PYTHONPATH
+
 python3 -m second_party.text_embedder.models.clip.main \
     --video-metadata-path /ptmp/dduka/databases/ego4d/video_320px_15sec/lavila_captions_num_frames_4/temperature_0.7/unique_captions.json \
     --output-path /ptmp/dduka/databases/ego4d/video_320px_15sec/lavila_captions_num_frames_4/temperature_0.7/embeddings/ \
