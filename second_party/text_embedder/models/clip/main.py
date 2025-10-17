@@ -2,13 +2,13 @@ import os
 import torch
 import argparse
 import open_clip
-import numpy as np
 import wandb
 import json
 
 from tqdm import tqdm
+from safetensors.torch import save_file
+
 from second_party.text_embedder.data.datasets import VideoMetadataDataset
-from second_party.text_embedder.common.mmap import MemmapUtils
 
 
 def get_args_parser():
@@ -19,7 +19,6 @@ def get_args_parser():
     parser.add_argument("--video-metadata-path", type=str, required=True)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=1)
-    parser.add_argument("--flush-frequency", type=int, default=10)
     return parser
 
 
@@ -79,25 +78,9 @@ def main(args):
     )
     os.makedirs(output_dir, exist_ok=True)
 
-    index_path = os.path.join(output_dir, "index.json")
-
-    shape = (len(video_metadata_dataset), dim)
-
-    mmap_utils = MemmapUtils(
-        output_dir=output_dir,
-        filename="embeddings.memmap",
-        shape=shape,
-        dtype=np.float32,
-        mode="w+",
-        flush_frequency=args.flush_frequency,
-    )
-
-    print(f"Estimated memory usage: {mmap_utils.estimated_megabytes():.2f} MB")
-
-    index_array = {"captions": {}, "metadata": {**args.__dict__}}
-
+    embeddings = {}
     for batch_idx, batch in enumerate(tqdm(dataloader, desc="Encoding text")):
-        original_caption, caption, _ = (
+        original_caption, caption, frequency = (
             batch["original_caption"],
             batch["caption"],
             batch["frequency"],
@@ -108,10 +91,10 @@ def main(args):
         text_features = encode_text(model, caption).detach().float().cpu().numpy()
 
         for i in range(len(original_caption)):
-            global_index = batch_idx * args.batch_size + i
-            index_array["captions"][original_caption[i]] = global_index
-
-            mmap_utils.write_row(global_index, text_features[i])
+            embeddings[original_caption[i]] = {
+                "features": text_features[i],
+                "frequency": frequency[i],
+            }
 
         wandb.log(
             {
@@ -119,13 +102,32 @@ def main(args):
             }
         )
 
-    mmap_utils.flush()
+    print(f"Saving embeddings")
+    save_file(embeddings, os.path.join(output_dir, f"embeddings.safetensors"))
 
-    with open(index_path, "w") as f:
-        json.dump(index_array, f)
+    print(f"Saving metadata")
+    metadata = {
+        "model": args.model_name,
+        "pretrained": args.pretrained,
+        "video_metadata_path": args.video_metadata_path,
+        "batch_size": args.batch_size,
+        "num_workers": args.num_workers,
+    }
+
+    with open(os.path.join(output_dir, f"metadata.json"), "w") as f:
+        json.dump(metadata, f)
+
+    print(f"Done")
 
 
-# Run the script using: python3 -m second_party.text_embedder.models.clip.clip
+# Run the script using: python3 -m second_party.text_embedder.models.clip.main + args
 if __name__ == "__main__":
     args = get_args_parser().parse_args()
-    main(args)
+
+    try:
+        main(args)
+    except Exception as e:
+        print(f"Error: {e}")
+        wandb.finish(exit_code=1)
+    finally:
+        wandb.finish()
