@@ -5,9 +5,9 @@ import argparse
 import open_clip
 
 from tqdm import tqdm
-from safetensors.torch import save_file
 
 from second_party.text_embedder.data.datasets import VideoMetadataDataset
+from second_party.storage.sqlite import SQLiteClient
 
 
 def get_args_parser():
@@ -77,40 +77,40 @@ def main(args):
     )
     os.makedirs(output_dir, exist_ok=True)
 
-    embeddings = {}
-    for batch_idx, batch in enumerate(tqdm(dataloader, desc="Encoding text")):
-        original_caption, caption, _ = (
-            batch["original_caption"],
-            batch["caption"],
-            batch["frequency"],
-        )
+    with SQLiteClient(args.output_path) as client:
+        results = []
+        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Encoding text")):
+            original_caption, caption, frequency = (
+                batch["original_caption"],
+                batch["caption"],
+                batch["frequency"],
+            )
 
-        caption = caption.to(device)
+            caption = caption.to(device)
 
-        text_features = encode_text(model, caption).detach().float().cpu()
+            text_features = encode_text(model, caption).detach().float().cpu()
 
-        for i in range(len(original_caption)):
-            embeddings[original_caption[i]] = text_features[i]
+            for i in range(len(original_caption)):
+                results.append((original_caption[i], text_features[i], frequency))
 
-        wandb.log(
-            {
-                "progress": (batch_idx + 1) / len(dataloader),
-            }
-        )
+            if batch_idx % 200 == 0 and batch_idx > 0:
+                print(f"Inserting {len(results)} embeddings")
+                client.insert_embeddings(results)
+                results = []
 
-    print(f"Saving embeddings")
-    save_file(
-        embeddings,
-        os.path.join(output_dir, f"embeddings.safetensors"),
-        metadata={
-            "model": args.model_name,
-            "pretrained": args.pretrained,
-            "video_metadata_path": args.video_metadata_path,
-            "batch_size": args.batch_size,
-            "num_workers": args.num_workers,
-        },
-    )
+            wandb.log(
+                {
+                    "progress": (batch_idx + 1) / len(dataloader),
+                }
+            )
 
+        if len(results) > 0:
+            print(f"Inserting the last {len(results)} embeddings")
+            client.insert_embeddings(results)
+
+        print(f"Number of embeddings to be stored: {len(video_metadata_dataset)}")
+        print(f"Number of stored embeddings: {client.count_embeddings()}")
+        
     print(f"Done")
 
 
