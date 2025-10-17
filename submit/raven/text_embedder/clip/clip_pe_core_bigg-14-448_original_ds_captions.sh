@@ -22,7 +22,7 @@ nvidia-smi
 
 python3 -m second_party.text_embedder.models.clip.main \
     --video-metadata-path /ptmp/dduka/databases/ego4d/unique_captions.json \
-    --output-path /ptmp/dduka/databases/ego4d/embeddings/PE-Core-bigG-14-448 \
+    --output-path /ptmp/dduka/databases/ego4d/embeddings/ \
     --model-name PE-Core-bigG-14-448 \
     --pretrained meta \
     --batch-size 512 \
