@@ -106,6 +106,10 @@ class SQLiteClient:
             return None
         return np.frombuffer(row[0], dtype=dtype)
 
+    def count_embeddings(self) -> int:
+        conn = self._ensure_conn()
+        return conn.execute("SELECT COUNT(*) FROM embedding").fetchone()[0]
+
     # (no extra utilities; write and read only)
 
     def _ensure_conn(self) -> sqlite3.Connection:
