@@ -1,9 +1,8 @@
 import os
+import wandb
 import torch
 import argparse
 import open_clip
-import wandb
-import json
 
 from tqdm import tqdm
 from safetensors.torch import save_file
@@ -98,21 +97,19 @@ def main(args):
                 "progress": (batch_idx + 1) / len(dataloader),
             }
         )
-        
+
     print(f"Saving embeddings")
-    save_file(embeddings, os.path.join(output_dir, f"embeddings.safetensors"))
-
-    print(f"Saving metadata")
-    metadata = {
-        "model": args.model_name,
-        "pretrained": args.pretrained,
-        "video_metadata_path": args.video_metadata_path,
-        "batch_size": args.batch_size,
-        "num_workers": args.num_workers,
-    }
-
-    with open(os.path.join(output_dir, f"metadata.json"), "w") as f:
-        json.dump(metadata, f)
+    save_file(
+        embeddings,
+        os.path.join(output_dir, f"embeddings.safetensors"),
+        metadata={
+            "model": args.model_name,
+            "pretrained": args.pretrained,
+            "video_metadata_path": args.video_metadata_path,
+            "batch_size": args.batch_size,
+            "num_workers": args.num_workers,
+        },
+    )
 
     print(f"Done")
 
