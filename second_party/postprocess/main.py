@@ -11,13 +11,10 @@ from second_party.storage.sqlite import SQLiteClient
 from second_party.preprocess.utils import preprocess_captions
 
 
-def resolve_video_chunk_path(video_root, video_id, start, end, chunk_size=15):
+def resolve_video_chunk_path(video_id, start, end, chunk_size=15):
     """
     Return the list of chunk file paths that together cover the timeline [start, end).
     Chunks are 15s long: [0,15), [15,30), [30,45), ...
-
-    Paths are formatted as:
-      <video_root>/<video_id>/<index>.mp4
 
     Examples:
       - start=2.3, end=5.4  -> chunks [0]
@@ -38,14 +35,14 @@ def resolve_video_chunk_path(video_root, video_id, start, end, chunk_size=15):
     paths = []
     for idx in range(start_idx, end_idx + 1):
         chunk_start_time = int(idx * chunk_size)
-        chunk_filename = f"{chunk_start_time}.mp4"
-        paths.append(os.path.join(str(video_root), str(video_id), chunk_filename))
+        chunk_filename = f"{chunk_start_time}"
+        paths.append(f"{video_id}.mp4/{chunk_filename}.mp4/captions.json")
 
     return paths
 
 
-def get_chunks_metadata(paths):
-    return [json.load(open(path)) for path in paths]
+def get_chunks_metadata(chunk_metadata_root, paths):
+    return [json.load(open(os.path.join(chunk_metadata_root, path))) for path in paths]
 
 
 def main(args):
@@ -79,10 +76,12 @@ def main(args):
         anchor_caption = torch.from_numpy(caption_embedding)
 
         video_chunk_paths = resolve_video_chunk_path(
-            args.video_root, video_id, start, end, args.chunk_size
+            video_id, start, end, args.chunk_size
         )
 
-        # video_chunk_metadata = get_chunks_metadata(video_chunk_paths)
+        video_chunk_metadata = get_chunks_metadata(
+            args.chunk_metadata_root, video_chunk_paths
+        )
 
 
 if __name__ == "__main__":
