@@ -11,7 +11,7 @@
 #SBATCH --constraint="gpu"
 #SBATCH --mem=120000
 
-#SBATCH --time=03:59:59
+#SBATCH --time=23:59:59
 
 module purge
 module load anaconda/3/2023.03
@@ -25,7 +25,7 @@ export PYTHONPATH=/u/dduka/work/projects/Thesis/AVION:$PYTHONPATH
 
 python3 -m second_party.text_embedder.models.clip.main \
     --video-metadata-path /ptmp/dduka/databases/ego4d/video_320px_15sec/lavila_captions_num_frames_4/temperature_1.0/unique_captions.json \
-    --output-path /ptmp/dduka/databases/ego4d/video_320px_15sec/lavila_captions_num_frames_4/temperature_1.0/embeddings/ \
+    --output-path /ptmp/dduka/databases/ego4d/video_320px_15sec/lavila_captions_num_frames_4/temperature_0.7/embeddings/ \
     --model-name PE-Core-bigG-14-448 \
     --pretrained meta \
     --batch-size 512 \

@@ -11,7 +11,7 @@
 #SBATCH --constraint="gpu"
 #SBATCH --mem=120000
 
-#SBATCH --time=03:59:59
+#SBATCH --time=23:59:59
 
 module purge
 module load anaconda/3/2023.03
