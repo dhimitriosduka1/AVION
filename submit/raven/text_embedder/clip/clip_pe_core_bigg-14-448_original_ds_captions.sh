@@ -28,5 +28,6 @@ python3 -m second_party.text_embedder.models.clip.main \
     --output-path /ptmp/dduka/databases/ego4d/embeddings/ \
     --model-name PE-Core-bigG-14-448 \
     --pretrained meta \
+    --flush-frequency 200 \
     --batch-size 512 \
     --num-workers 8

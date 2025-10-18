@@ -18,6 +18,7 @@ def get_args_parser():
     parser.add_argument("--video-metadata-path", type=str, required=True)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=1)
+    parser.add_argument("--flush-frequency", type=int, default=200)
     return parser
 
 
@@ -107,7 +108,7 @@ def main(args):
             for i in range(len(original_caption)):
                 results.append((original_caption[i], text_features[i], int(frequency[i])))
 
-            if batch_idx % 200 == 0 and batch_idx > 0:
+            if batch_idx % args.flush_frequency == 0 and batch_idx > 0:
                 print(f"Inserting {len(results)} embeddings")
                 client.insert_embeddings(results)
                 results = []
