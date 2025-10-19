@@ -12,6 +12,7 @@
 #SBATCH --gres=gpu:4
 
 #SBATCH --time=23:59:59
+#SBATCH --array=1-2%1
 
 micromamba activate avion_h100
 
