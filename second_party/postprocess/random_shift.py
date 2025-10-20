@@ -29,6 +29,40 @@ def plot_segment_len_dist(segment_lengths: List[float], title: str):
     return fig
 
 
+def compute_intersection_stats(
+    original_start: float,
+    original_end: float,
+    new_start: float,
+    new_end: float,
+) -> Dict[str, float]:
+    """
+    Compute intersection statistics between original and new time windows.
+    Returns IoU, expansion ratio, and absolute change in duration.
+    """
+    # Intersection
+    intersection_start = max(original_start, new_start)
+    intersection_end = min(original_end, new_end)
+    intersection = max(0, intersection_end - intersection_start)
+
+    # Union
+    union_start = min(original_start, new_start)
+    union_end = max(original_end, new_end)
+    union = union_end - union_start
+
+    # IoU (Intersection over Union)
+    iou = intersection / union if union > 0 else 0.0
+
+    # Duration metrics
+    original_duration = original_end - original_start
+    new_duration = new_end - new_start
+    expansion_ratio = new_duration / original_duration if original_duration > 0 else 1.0
+
+    return {
+        "iou": iou,
+        "expansion_ratio": expansion_ratio,
+    }
+
+
 def jitter_scale_window(
     start: float,
     end: float,
@@ -141,19 +175,16 @@ def main(args):
     scales = rng.uniform(args.scale_min, args.scale_max, size=total)
 
     result = {
-        "missing_video_count": 0,
         "old_timestamps_duration": [],
         "new_timestamps_duration": [],
         "new_data": [],
+        "iou": [],
+        "expansion_ratio": [],
     }
 
     for i, sample in tqdm(enumerate(data), desc="Jittering timestamps"):
         vid, start, end, meta = sample
         vdur = durations.get(vid, None)
-
-        if vdur is None or vdur <= 0:
-            result["missing_video_count"] += 1
-            continue
 
         new_start, new_end = jitter_scale_window(
             start=sample[1],
@@ -166,6 +197,11 @@ def main(args):
 
         result["old_timestamps_duration"].append(end - start)
         result["new_timestamps_duration"].append(new_end - new_start)
+
+        compute_stats = compute_intersection_stats(start, end, new_start, new_end)
+        result["iou"].append(compute_stats["iou"])
+        result["expansion_ratio"].append(compute_stats["expansion_ratio"])
+
         result["new_data"].append((vid, new_start, new_end, meta))
 
         # Throttle W&B logging
@@ -191,24 +227,41 @@ def main(args):
         title="Segment Lengths Histogram (Shifted Timestamps)",
     )
 
-    table = wandb.Table(columns=["Metric", "Mean", "Std"])
-
-    table.add_data(
-        "Timestamp Duration (Original)",
-        np.mean(result["old_timestamps_duration"]),
-        np.std(result["old_timestamps_duration"]),
+    table = wandb.Table(
+        columns=[
+            "Dataset",
+            "Mean Timestamp Duration",
+            "Std Timestamp Duration",
+            "Mean IoU",
+            "Std IoU",
+            "Mean Expansion Ratio",
+            "Std Expansion Ratio",
+        ]
     )
 
     table.add_data(
-        "Timestamp Duration (Jittered)",
+        "Original",
+        np.mean(result["old_timestamps_duration"]),
+        np.std(result["old_timestamps_duration"]),
+        -1.0,
+        -1.0,
+        -1.0,
+        -1.0,
+    )
+
+    table.add_data(
+        "Shifted",
         np.mean(result["new_timestamps_duration"]),
         np.std(result["new_timestamps_duration"]),
+        np.mean(result["iou"]),
+        np.std(result["iou"]),
+        np.mean(result["expansion_ratio"]),
+        np.std(result["expansion_ratio"]),
     )
 
     wandb.log(
         {
             "table": table,
-            "missing_video_count": result["missing_video_count"],
             "original_timestamp_dist": wandb.Image(original_distribution),
             "shifted_timestamp_dist": wandb.Image(shifted_timestamps_distribution),
         }
