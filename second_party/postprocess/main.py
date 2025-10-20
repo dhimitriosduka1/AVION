@@ -59,22 +59,22 @@ def precompute_video_embeddings(
     Returns: array of shape (num_segments, embedding_dim)
     """
     all_embeddings = []
-    
+
     for idx in range(len(flattened_metadata)):
         captions = flattened_metadata[idx]["captions"]
         rng = random.Random(f"{seed}:{idx}")
         chosen = rng.sample(captions, min(embeddings_to_include, len(captions)))
-        
+
         embeddings = []
         for caption in chosen:
             processed = preprocess_captions([caption])[0]
             embedding = lavila_embeddings_client.get_embedding(processed)
             embeddings.append(np.asarray(embedding, dtype=np.float32))
-        
+
         mean_embedding = np.mean(np.stack(embeddings, axis=0), axis=0)
         normalized = mean_embedding / np.linalg.norm(mean_embedding)
         all_embeddings.append(normalized)
-    
+
     return np.stack(all_embeddings, axis=0)
 
 
@@ -96,7 +96,7 @@ def expand_window(
         if cosine_sim(anchor_embedding, embedding) < tau:
             break
         left -= 1
-    
+
     # Expand right
     right = anchor_idx
     while right + 1 < len(flattened_metadata):
@@ -104,13 +104,15 @@ def expand_window(
         if cosine_sim(anchor_embedding, embedding) < tau:
             break
         right += 1
-    
+
     return math.floor(flattened_metadata[left]["timestamps"][0]), math.ceil(
         flattened_metadata[right]["timestamps"][-1]
     )
 
 
-def group_samples_by_video(data: List[Tuple]) -> Tuple[Dict[str, List[Tuple]], List[int]]:
+def group_samples_by_video(
+    data: List[Tuple],
+) -> Tuple[Dict[str, List[Tuple]], List[int]]:
     """
     Group samples by video_id for batch processing.
     Returns: (video_groups, original_indices) where original_indices maps back to input order.
@@ -150,14 +152,14 @@ def main(args):
 
     # Results will be stored with their original index
     results_dict = {}
-    
+
     # Process one video at a time
     for video_id, samples in tqdm(video_groups.items(), desc="Processing videos"):
         # Load metadata once per video
         flattened_metadata = load_all_chunks_metadata_for_video(
             args.chunk_metadata_root, f"{video_id}.mp4"
         )
-        
+
         # Precompute all embeddings for this video once
         precomputed_embeddings = precompute_video_embeddings(
             flattened_metadata,
@@ -165,17 +167,17 @@ def main(args):
             lavila_embeddings,
             video_id,
         )
-        
+
         # Process all samples for this video
         for original_idx, start, end, original_caption in samples:
             anchor_timestamp = 0.5 * (start + end)
             caption = preprocess_captions([original_caption])[0]
-            
+
             # The anchor caption against which the similarities are computed
             anchor_caption = ego4d_embeddings.get_embedding(caption)
-            
+
             anchor_idx = resolve_anchor_index(anchor_timestamp, flattened_metadata)
-            
+
             new_start, new_end = expand_window(
                 precomputed_embeddings,
                 flattened_metadata,
@@ -183,9 +185,14 @@ def main(args):
                 anchor_idx,
                 args.tau,
             )
-            
-            results_dict[original_idx] = (video_id, new_start, new_end, original_caption)
-    
+
+            results_dict[original_idx] = (
+                video_id,
+                new_start,
+                new_end,
+                original_caption,
+            )
+
     # Reconstruct results in original order
     results = [results_dict[i] for i in range(len(data))]
 
@@ -195,7 +202,7 @@ def main(args):
     )
     with open(output_file, "wb") as f:
         pickle.dump(results, f)
-    
+
     print(f"Saved {len(results)} results to {output_file}")
 
 
