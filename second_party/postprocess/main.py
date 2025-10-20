@@ -5,6 +5,7 @@ import torch
 import pickle
 import argparse
 
+from typing import Dict
 from tqdm import tqdm
 
 from second_party.storage.sqlite import SQLiteClient
@@ -44,7 +45,13 @@ def resolve_video_chunk_path(video_id, start, end, chunk_size=15):
 def get_chunks_metadata(chunk_metadata_root, paths):
     return [json.load(open(os.path.join(chunk_metadata_root, path))) for path in paths]
 
-
+def resolve_metadata_based_on_anchor_timestamp(metadata, anchor_timestamp):
+    for i, m in enumerate(metadata):
+        start, end = m["timestamps"][0], m["timestamps"][-1]
+        if start <= anchor_timestamp < end:
+            return i
+    return None
+    
 def main(args):
     assert args.dataset.endswith(".pkl"), "Dataset must be a pickle file"
     assert args.ego4d_embeddings_path.endswith(
@@ -69,19 +76,23 @@ def main(args):
 
     for sample in tqdm(data, desc="Processing samples"):
         video_id, start, end, caption = sample
+        anchor_timestamp = 0.5 * (start + end)
+        
         caption = preprocess_captions([caption])[0]
         caption_embedding = ego4d_embeddings.get_embedding(caption)
 
         # The anchor caption against which the similarities are computed.
         anchor_caption = torch.from_numpy(caption_embedding)
 
-        video_chunk_paths = resolve_video_chunk_path(
+        video_chunks_paths = resolve_video_chunk_path(
             video_id, start, end, args.chunk_size
         )
 
-        video_chunk_metadata = get_chunks_metadata(
-            args.chunk_metadata_root, video_chunk_paths
+        video_chunks_metadata = get_chunks_metadata(
+            args.chunk_metadata_root, video_chunks_paths
         )
+
+
 
 
 if __name__ == "__main__":
