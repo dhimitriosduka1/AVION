@@ -197,23 +197,11 @@ def main(args):
     print(f"Loaded {len(data)} samples")
 
     print(f"Opening {args.ego4d_embeddings_path} embeddings")
-    ego4d_embeddings = SQLiteClient(
-        args.ego4d_embeddings_path,
-        init_schema=False,
-        read_only=True,
-        immutable=True,
-        timeout=30.0,
-    )
+    ego4d_embeddings = SQLiteClient(args.ego4d_embeddings_path)
     print(f"Loaded {ego4d_embeddings.count_embeddings()} ego4d embeddings")
 
     print(f"Opening {args.lavila_embeddings_path} embeddings")
-    lavila_embeddings = SQLiteClient(
-        args.lavila_embeddings_path,
-        init_schema=False,
-        read_only=True,
-        immutable=True,
-        timeout=30.0,
-    )
+    lavila_embeddings = SQLiteClient(args.lavila_embeddings_path)
     print(f"Loaded {lavila_embeddings.count_embeddings()} lavila embeddings")
 
     # Group samples by video
