@@ -29,6 +29,39 @@ def plot_segment_len_dist(segment_lengths: List[float], title: str):
     return fig
 
 
+def compute_intersection_stats(
+    original_start: float,
+    original_end: float,
+    new_start: float,
+    new_end: float,
+) -> Dict[str, float]:
+    """
+    Compute intersection statistics between original and new time windows.
+    Returns IoU, expansion ratio, and absolute change in duration.
+    """
+    # Intersection
+    intersection_start = max(original_start, new_start)
+    intersection_end = min(original_end, new_end)
+    intersection = max(0, intersection_end - intersection_start)
+    
+    # Union
+    union_start = min(original_start, new_start)
+    union_end = max(original_end, new_end)
+    union = union_end - union_start
+    
+    # IoU (Intersection over Union)
+    iou = intersection / union if union > 0 else 0.0
+    
+    # Duration metrics
+    original_duration = original_end - original_start
+    new_duration = new_end - new_start
+    expansion_ratio = new_duration / original_duration if original_duration > 0 else 1.0
+    
+    return {
+        "iou": iou,
+        "expansion_ratio": expansion_ratio,
+    }
+
 def cosine_sim(embeddings1: np.ndarray, embeddings2: np.ndarray) -> float:
     """
     Cosine similarity assuming embeddings are already normalized upstream.
@@ -159,7 +192,7 @@ def main(args):
 
     print(f"Opening {args.dataset} dataset")
     with open(args.dataset, "rb") as f:
-        data = pickle.load(f)
+        data = pickle.load(f)[:1000]
     print(f"Loaded {len(data)} samples")
 
     print(f"Opening {args.ego4d_embeddings_path} embeddings")
@@ -180,11 +213,11 @@ def main(args):
     stats_dict = {
         "old_timestamps_duration": [],
         "new_timestamps_duration": [],
+        "iou": [],
+        "expansion_ratio": [],
     }
     # Process one video at a time
-    for i, (video_id, samples) in enumerate(
-        tqdm(enumerate(video_groups.items()), desc="Processing videos")
-    ):
+    for i, (video_id, samples) in tqdm(enumerate(video_groups.items()), desc="Processing videos", total=len(video_groups)):
         # Load metadata once per video
         flattened_metadata = load_all_chunks_metadata_for_video(
             args.chunk_metadata_root, f"{video_id}.mp4"
@@ -226,6 +259,10 @@ def main(args):
             stats_dict["old_timestamps_duration"].append(end - start)
             stats_dict["new_timestamps_duration"].append(new_end - new_start)
 
+            compute_stats = compute_intersection_stats(start, end, new_start, new_end)
+            stats_dict["iou"].append(compute_stats["iou"])
+            stats_dict["expansion_ratio"].append(compute_stats["expansion_ratio"])
+
         # Throttle W&B logging
         if (i % args.log_every) == 0:
             wandb.log({"progress": (i + 1) / len(video_groups)}, step=i + 1)
@@ -255,18 +292,26 @@ def main(args):
         title="Segment Lengths Histogram (Shifted Timestamps)",
     )
 
-    table = wandb.Table(columns=["Metric", "Mean", "Std"])
+    table = wandb.Table(columns=["Dataset", "Mean Timestamp Duration", "Std Timestamp Duration", "Mean IoU", "Std IoU", "Mean Expansion Ratio", "Std Expansion Ratio"])
 
     table.add_data(
-        "Timestamp Duration (Original)",
+        "Original",
         np.mean(stats_dict["old_timestamps_duration"]),
         np.std(stats_dict["old_timestamps_duration"]),
+        -1.0,
+        -1.0,
+        -1.0,
+        -1.0,
     )
 
     table.add_data(
-        "Timestamp Duration (Jittered)",
+        "Shifted",
         np.mean(stats_dict["new_timestamps_duration"]),
         np.std(stats_dict["new_timestamps_duration"]),
+        np.mean(stats_dict["iou"]),
+        np.std(stats_dict["iou"]),
+        np.mean(stats_dict["expansion_ratio"]),
+        np.std(stats_dict["expansion_ratio"]),
     )
 
     wandb.log(
