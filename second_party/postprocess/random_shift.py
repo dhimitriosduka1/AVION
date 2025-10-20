@@ -6,7 +6,7 @@ import numpy as np
 import decord
 import wandb
 import numpy as np
-import matplotlib as plt
+from matplotlib import pyplot as plt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pathlib import Path
