@@ -2,14 +2,18 @@ import os
 import json
 import math
 import torch
+import random
 import pickle
 import argparse
+import numpy as np
 
 from typing import Dict
 from tqdm import tqdm
 
 from second_party.storage.sqlite import SQLiteClient
 from second_party.preprocess.utils import preprocess_captions
+
+random.seed(42)
 
 
 def resolve_video_chunk_path(video_id, start, end, chunk_size=15):
@@ -45,13 +49,87 @@ def resolve_video_chunk_path(video_id, start, end, chunk_size=15):
 def get_chunks_metadata(chunk_metadata_root, paths):
     return [json.load(open(os.path.join(chunk_metadata_root, path))) for path in paths]
 
-def resolve_metadata_based_on_anchor_timestamp(metadata, anchor_timestamp):
-    for i, m in enumerate(metadata):
-        start, end = m["timestamps"][0], m["timestamps"][-1]
-        if start <= anchor_timestamp < end:
-            return i
-    return None
-    
+
+def resolve_metadata_idx_based_on_anchor_timestamp(anchor_timestamp):
+    # for i, m in enumerate(metadata):
+    #     start, end = m["timestamps"][0], m["timestamps"][-1]
+    #     if start <= anchor_timestamp < end:
+    #         return i
+    # return None
+    # For the current implementation, where we have 1 segment per each second, finding
+    # the correct index is as easy as:
+    return math.floor(anchor_timestamp)
+
+
+def resolve_embedding_at_idx(
+    metadata, idx, embeddings_to_include, lavila_embeddings_client
+):
+    # Currently, we have 10 embeddings per each metadata entry.
+    assert embeddings_to_include <= 10, "embeddings_to_include must be less than 11"
+
+    captions = random.sample(metadata[idx]["captions"], embeddings_to_include)
+
+    embeddings = []
+    for caption in captions:
+        caption = preprocess_captions([caption])[0]
+        embedding = lavila_embeddings_client.get_embedding(caption)
+        embeddings.append(embedding)
+
+    return np.mean(embeddings, axis=0)
+
+
+def cosine_sim(embeddings1, embeddings2):
+    # Embeddings are assumed to be normalized
+    return np.dot(embeddings1, embeddings2)
+
+
+def expand_window(
+    metadata,
+    anchor_caption_embedding,
+    anchor_idx,
+    prev_start,
+    prev_end,
+    lavila_embeddings_client,
+    tau=0.7,
+    embeddings_to_include=4,
+):
+    new_start = prev_start
+    new_end = prev_end
+
+    # Expand to the left - find leftmost index still above threshold
+    left_idx = anchor_idx - 1
+    while left_idx >= 0:
+        # TODO: Get actual embedding for metadata[left_idx] instead of random
+        current_index_embedding = resolve_embedding_at_idx(
+            metadata, left_idx, embeddings_to_include, lavila_embeddings_client
+        )
+
+        if np.dot(anchor_caption_embedding, current_index_embedding) < tau:
+            break
+        left_idx -= 1
+
+    leftmost_valid_idx = left_idx + 1
+
+    # Expand to the right - find rightmost index still above threshold
+    right_idx = anchor_idx + 1
+    while right_idx < len(metadata):
+        # TODO: Get actual embedding for metadata[right_idx] instead of random
+        current_index_embedding = np.random.randn(
+            len(anchor_caption_embedding)
+        )  # Placeholder
+
+        if np.dot(anchor_caption_embedding, current_index_embedding) < tau:
+            break
+        right_idx += 1
+
+    rightmost_valid_idx = right_idx - 1
+
+    new_start = metadata[leftmost_valid_idx]["timestamps"][0]
+    new_end = metadata[rightmost_valid_idx]["timestamps"][-1]
+
+    return new_start, new_end
+
+
 def main(args):
     assert args.dataset.endswith(".pkl"), "Dataset must be a pickle file"
     assert args.ego4d_embeddings_path.endswith(
@@ -77,12 +155,11 @@ def main(args):
     for sample in tqdm(data, desc="Processing samples"):
         video_id, start, end, caption = sample
         anchor_timestamp = 0.5 * (start + end)
-        
-        caption = preprocess_captions([caption])[0]
-        caption_embedding = ego4d_embeddings.get_embedding(caption)
 
+        caption = preprocess_captions([caption])[0]
+        
         # The anchor caption against which the similarities are computed.
-        anchor_caption = torch.from_numpy(caption_embedding)
+        anchor_caption = ego4d_embeddings.get_embedding(caption)
 
         video_chunks_paths = resolve_video_chunk_path(
             video_id, start, end, args.chunk_size
@@ -91,8 +168,6 @@ def main(args):
         video_chunks_metadata = get_chunks_metadata(
             args.chunk_metadata_root, video_chunks_paths
         )
-
-
 
 
 if __name__ == "__main__":
