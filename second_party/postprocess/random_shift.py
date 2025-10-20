@@ -32,8 +32,6 @@ def plot_segment_len_dist(segment_lengths: List[float], title: str):
 def jitter_scale_window(
     start: float,
     end: float,
-    scale_min: float = 0.6,
-    scale_max: float = 1.6,
     min_duration: float = 1.0,
     max_duration: float = 5.0,
     min_start: float = 0.0,
@@ -41,23 +39,32 @@ def jitter_scale_window(
     scale_factor: float = 1.0,
 ):
     """
-    Keep center fixed. Grow/shrink window by a random scale s ~ U[scale_min, scale_max].
-    Enforce duration bounds: min_duration <= new_duration <= max_duration.
+    Keep center fixed. Grow/shrink window by a random scale s.
+    Enforce duration bounds. If window goes out of bounds,
+    shift it to stay within [min_start, video_duration]
+    while preserving the new duration.
     """
-    assert (
-        scale_min > 0 and scale_max > 0 and scale_min <= scale_max
-    ), "Invalid scale range"
     c = 0.5 * (start + end)
     d = max(end - start, 1e-6)  # avoid zero
 
-    new_d = max(min(d * scale_factor, max_duration), min_duration)
+    new_d = max(min(min(d * scale_factor, max_duration), video_duration), min_duration)
 
-    new_start = max(c - new_d / 2.0, min_start)
+    new_start = c - new_d / 2.0
     new_end = c + new_d / 2.0
 
     if new_end > video_duration:
-        new_start += new_end - video_duration
+        excess = new_end - video_duration
+        new_start -= excess
         new_end = video_duration
+
+    if new_start < min_start:
+        # Shift right
+        excess = min_start - new_start
+        new_start = min_start
+        new_end += excess
+
+        if new_end > video_duration:
+            new_end = video_duration
 
     return new_start, new_end
 
@@ -133,7 +140,6 @@ def main(args):
 
     result = {
         "missing_video_count": 0,
-        "clamped_count": 0,
         "old_timestamps_duration": [],
         "new_timestamps_duration": [],
         "new_data": [],
@@ -150,8 +156,6 @@ def main(args):
         new_start, new_end = jitter_scale_window(
             start=sample[1],
             end=sample[2],
-            scale_min=args.scale_min,
-            scale_max=args.scale_max,
             min_duration=args.min_duration,
             max_duration=args.max_duration,
             video_duration=vdur,
@@ -203,7 +207,6 @@ def main(args):
         {
             "table": table,
             "missing_video_count": result["missing_video_count"],
-            "clamped_count": result["clamped_count"],
             "original_timestamp_dist": wandb.Image(original_distribution),
             "shifted_timestamp_dist": wandb.Image(shifted_timestamps_distribution),
         }
