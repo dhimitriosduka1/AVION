@@ -7,14 +7,13 @@ import pickle
 import argparse
 import numpy as np
 
-from typing import Dict
 from tqdm import tqdm
 
 from second_party.storage.sqlite import SQLiteClient
 from second_party.preprocess.utils import preprocess_captions
 
 random.seed(42)
-
+np.random.seed(42)
 
 def resolve_video_chunk_path(video_id, start, end, chunk_size=15):
     """
