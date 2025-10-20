@@ -8,6 +8,7 @@ import argparse
 import numpy as np
 
 from tqdm import tqdm
+from typing import List
 
 from second_party.storage.sqlite import SQLiteClient
 from second_party.preprocess.utils import preprocess_captions
@@ -16,20 +17,25 @@ random.seed(42)
 np.random.seed(42)
 
 
-def resolve_video_chunk_path(video_id, start, end, chunk_size=15):
+def resolve_video_chunk_path(
+    video_id: str, start: float, end: float, chunk_size: int = 15
+) -> List[str]:
     """
-    Return the list of chunk file paths that together cover the timeline [start, end).
-    Chunks are 15s long: [0,15), [15,30), [30,45), ...
+    Return the list of metadata file paths for chunks overlapping the interval [start, end).
 
-    Examples:
-      - start=2.3, end=5.4  -> chunks [0]
-      - start=10.3, end=16.9 -> chunks [0, 1]  (crosses the 15s boundary)
+    Chunks are chunk_size seconds each: [0, chunk_size), [chunk_size, 2*chunk_size), ...
+
+    Examples (chunk_size=15):
+      - start=2.3, end=5.4   -> chunk starting at 0
+      - start=10.3, end=16.9 -> chunks starting at 0 and 15 (crosses the 15s boundary)
+
+    NOTE: This function returns metadata paths following the layout:
+          f"{video_id}.mp4/{chunk_start}.mp4/captions.json"
     """
     if start < 0 or end < 0:
-        raise ValueError("Start and end must be non-negative")
-
+        raise ValueError("Start and end must be non-negative values")
     if end <= start:
-        raise ValueError("End must be greater than start")
+        raise ValueError("End must be greater than start value")
 
     epsilon = 1e-9
     end_adj = max(0.0, end - epsilon)
@@ -50,8 +56,10 @@ def get_chunks_metadata(chunk_metadata_root, paths):
     return [json.load(open(os.path.join(chunk_metadata_root, path))) for path in paths]
 
 
-def resolve_metadata_idx_based_on_anchor_timestamp(anchor_timestamp):
-    # for i, m in enumerate(metadata):
+def resolve_metadata_idx_based_on_anchor_timestamp(anchor_timestamp: float) -> int:
+    """
+    For current implementation (1 segment per second), the index is simply floor(anchor_timestamp).
+    """  # for i, m in enumerate(metadata):
     #     start, end = m["timestamps"][0], m["timestamps"][-1]
     #     if start <= anchor_timestamp < end:
     #         return i
@@ -78,9 +86,11 @@ def resolve_embedding_at_idx(
     return np.mean(embeddings, axis=0)
 
 
-def cosine_sim(embeddings1, embeddings2):
-    # Embeddings are assumed to be normalized
-    return np.dot(embeddings1, embeddings2)
+def cosine_sim(embeddings1: np.ndarray, embeddings2: np.ndarray) -> float:
+    """
+    Cosine similarity assuming embeddings are already normalized upstream.
+    """
+    return float(np.dot(embeddings1, embeddings2))
 
 
 def expand_window(
