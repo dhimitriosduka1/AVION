@@ -114,8 +114,8 @@ def expand_window(
     right_idx = anchor_idx + 1
     while right_idx < len(metadata):
         # TODO: Get actual embedding for metadata[right_idx] instead of random
-        current_index_embedding = np.random.randn(
-            len(anchor_caption_embedding)
+        current_index_embedding = resolve_embedding_at_idx(
+            metadata, right_idx, embeddings_to_include, lavila_embeddings_client
         )  # Placeholder
 
         if np.dot(anchor_caption_embedding, current_index_embedding) < tau:
@@ -157,7 +157,7 @@ def main(args):
         anchor_timestamp = 0.5 * (start + end)
 
         caption = preprocess_captions([caption])[0]
-        
+
         # The anchor caption against which the similarities are computed.
         anchor_caption = ego4d_embeddings.get_embedding(caption)
 
@@ -172,12 +172,39 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", type=str, required=True)
-    parser.add_argument("--ego4d-embeddings-path", type=str, required=True)
-    parser.add_argument("--lavila-embeddings-path", type=str, required=True)
-    parser.add_argument("--chunk-metadata-root", type=str, required=True)
-    parser.add_argument("--chunk-size", type=int, default=15)
-    parser.add_argument("--video-root", type=str, required=True)
-    parser.add_argument("--output-path", type=str, required=True)
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        required=True,
+        help="Pickle file with samples: (video_id, start, end, caption)",
+    )
+    parser.add_argument(
+        "--ego4d-embeddings-path",
+        type=str,
+        required=True,
+        help="Precomputed and normalized Ego4D captions embeddings",
+    )
+    parser.add_argument(
+        "--lavila-embeddings-path",
+        type=str,
+        required=True,
+        help="Precomputed and normalized LaViLa captions embeddings",
+    )
+    parser.add_argument(
+        "--chunk-metadata-root",
+        type=str,
+        required=True,
+        help="Root folder containing per-chunk captions metadata JSONs",
+    )
+    parser.add_argument("--chunk-size", type=int, default=15, help="Seconds per chunk")
+    parser.add_argument(
+        "--video-root",
+        type=str,
+        default="",
+        help="Root directory for videos",
+    )
+    parser.add_argument(
+        "--output-path", type=str, required=True, help="Pickle output file"
+    )
     args = parser.parse_args()
     main(args)
