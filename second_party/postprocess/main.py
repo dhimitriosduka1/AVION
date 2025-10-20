@@ -8,7 +8,7 @@ import argparse
 import numpy as np
 
 from tqdm import tqdm
-from typing import List
+from typing import List, Dict, Any, Optional
 
 from second_party.storage.sqlite import SQLiteClient
 from second_party.preprocess.utils import preprocess_captions
@@ -70,20 +70,28 @@ def resolve_metadata_idx_based_on_anchor_timestamp(anchor_timestamp: float) -> i
 
 
 def resolve_embedding_at_idx(
-    metadata, idx, embeddings_to_include, lavila_embeddings_client
-):
-    # Currently, we have 10 embeddings per each metadata entry.
-    assert embeddings_to_include <= 10, "embeddings_to_include must be less than 11"
+    metadata: List[Dict[str, Any]],
+    idx: int,
+    embeddings_to_include: int,
+    lavila_embeddings_client: SQLiteClient,
+    seed: str = None,
+) -> np.ndarray:
+    """Average N sampled caption embeddings for metadata[idx] (deterministic by seed+idx)."""
+    caps = metadata[idx]["captions"]
+    if embeddings_to_include > len(caps):
+        raise ValueError("embeddings_to_include exceeds available captions")
 
-    captions = random.sample(metadata[idx]["captions"], embeddings_to_include)
+    rng = random.Random(f"{seed}:{idx}" if seed is not None else str(idx))
+    chosen = rng.sample(caps, embeddings_to_include)
 
     embeddings = []
-    for caption in captions:
-        caption = preprocess_captions([caption])[0]
-        embedding = lavila_embeddings_client.get_embedding(caption)
-        embeddings.append(embedding)
+    for caption in chosen:
+        processed = preprocess_captions([caption])[0]
+        embedding = lavila_embeddings_client.get_embedding(processed)
+        embeddings.append(np.asarray(embedding, dtype=np.float32))
 
-    return np.mean(embeddings, axis=0)
+    mean_embedding = np.mean(np.stack(embeddings, axis=0), axis=0)
+    return mean_embedding / np.linalg.norm(mean_embedding)
 
 
 def cosine_sim(embeddings1: np.ndarray, embeddings2: np.ndarray) -> float:
@@ -94,49 +102,43 @@ def cosine_sim(embeddings1: np.ndarray, embeddings2: np.ndarray) -> float:
 
 
 def expand_window(
-    metadata,
-    anchor_caption_embedding,
-    anchor_idx,
-    prev_start,
-    prev_end,
-    lavila_embeddings_client,
-    tau=0.7,
-    embeddings_to_include=4,
-):
-    new_start = prev_start
-    new_end = prev_end
+    metadata: List[Dict[str, Any]],
+    anchor_caption_embedding: np.ndarray,
+    anchor_idx: int,
+    tau: float,
+    lavila_embeddings_client: SQLiteClient,
+    embeddings_to_include: int,
+) -> (float, float):
+    """
+    Expand from anchor_idx left and right while similarity >= tau.
+    Uses get_idx_embedding(idx) to retrieve/calc embeddings with caching.
+    """
+    n = len(metadata)
+    if n == 0:
+        raise ValueError("Empty metadata timeline; cannot expand window.")
 
-    # Expand to the left - find leftmost index still above threshold
-    left_idx = anchor_idx - 1
-    while left_idx >= 0:
-        # TODO: Get actual embedding for metadata[left_idx] instead of random
-        current_index_embedding = resolve_embedding_at_idx(
-            metadata, left_idx, embeddings_to_include, lavila_embeddings_client
+    # Expand left
+    left = anchor_idx
+    while left - 1 >= 0:
+        emb_left = resolve_embedding_at_idx(
+            metadata, left - 1, embeddings_to_include, lavila_embeddings_client
         )
-
-        if np.dot(anchor_caption_embedding, current_index_embedding) < tau:
+        if cosine_sim(anchor_caption_embedding, emb_left) < tau:
             break
-        left_idx -= 1
+        left -= 1
 
-    leftmost_valid_idx = left_idx + 1
-
-    # Expand to the right - find rightmost index still above threshold
-    right_idx = anchor_idx + 1
-    while right_idx < len(metadata):
-        # TODO: Get actual embedding for metadata[right_idx] instead of random
-        current_index_embedding = resolve_embedding_at_idx(
-            metadata, right_idx, embeddings_to_include, lavila_embeddings_client
-        )  # Placeholder
-
-        if np.dot(anchor_caption_embedding, current_index_embedding) < tau:
+    # Expand right
+    right = anchor_idx
+    while right + 1 < n:
+        emb_right = resolve_embedding_at_idx(
+            metadata, right + 1, embeddings_to_include, lavila_embeddings_client
+        )
+        if cosine_sim(anchor_caption_embedding, emb_right) < tau:
             break
-        right_idx += 1
+        right += 1
 
-    rightmost_valid_idx = right_idx - 1
-
-    new_start = metadata[leftmost_valid_idx]["timestamps"][0]
-    new_end = metadata[rightmost_valid_idx]["timestamps"][-1]
-
+    new_start = metadata[left]["timestamps"][0]
+    new_end = metadata[right]["timestamps"][-1]
     return new_start, new_end
 
 
