@@ -1,14 +1,14 @@
 import os
 import json
 import math
-import torch
 import random
 import pickle
 import argparse
 import numpy as np
 
 from tqdm import tqdm
-from typing import List, Dict, Any, Optional
+from pathlib import Path
+from typing import List, Dict, Any
 
 from second_party.storage.sqlite import SQLiteClient
 from second_party.preprocess.utils import preprocess_captions
@@ -17,56 +17,40 @@ random.seed(42)
 np.random.seed(42)
 
 
-def resolve_video_chunk_path(
-    video_id: str, start: float, end: float, chunk_size: int = 15
-) -> List[str]:
+def cosine_sim(embeddings1: np.ndarray, embeddings2: np.ndarray) -> float:
     """
-    Return the list of metadata file paths for chunks overlapping the interval [start, end).
-
-    Chunks are chunk_size seconds each: [0, chunk_size), [chunk_size, 2*chunk_size), ...
-
-    Examples (chunk_size=15):
-      - start=2.3, end=5.4   -> chunk starting at 0
-      - start=10.3, end=16.9 -> chunks starting at 0 and 15 (crosses the 15s boundary)
-
-    NOTE: This function returns metadata paths following the layout:
-          f"{video_id}.mp4/{chunk_start}.mp4/captions.json"
+    Cosine similarity assuming embeddings are already normalized upstream.
     """
-    if start < 0 or end < 0:
-        raise ValueError("Start and end must be non-negative values")
-    if end <= start:
-        raise ValueError("End must be greater than start value")
-
-    epsilon = 1e-9
-    end_adj = max(0.0, end - epsilon)
-
-    start_idx = int(math.floor(start / chunk_size))
-    end_idx = int(math.floor(end_adj / chunk_size))
-
-    paths = []
-    for idx in range(start_idx, end_idx + 1):
-        chunk_start_time = int(idx * chunk_size)
-        chunk_filename = f"{chunk_start_time}"
-        paths.append(f"{video_id}.mp4/{chunk_filename}.mp4/captions.json")
-
-    return paths
+    return float(np.dot(embeddings1, embeddings2))
 
 
-def get_chunks_metadata(chunk_metadata_root, paths):
-    return [json.load(open(os.path.join(chunk_metadata_root, path))) for path in paths]
+def load_all_chunks_metadata_for_video(chunk_metadata_root: str, video_id: str):
+    base_video_path = Path(chunk_metadata_root) / video_id
+
+    captions = []
+    for chunk_path in base_video_path.glob("*.mp4/captions.json"):
+        with open(chunk_path, "r", encoding="utf-8") as f:
+            chunk_start_offset = int(str(chunk_path).split("/")[-2].split(".")[0])
+            metadata = json.load(f)["metadata"]
+
+            # Update the timestamp so that it is ofsetted by the chunk start
+            for m in metadata:
+                m["timestamps"] = [x + chunk_start_offset for x in m["timestamps"]]
+
+            captions.extend(metadata)
+
+    # Sort by start timestamp
+    captions.sort(key=lambda x: x["timestamps"][0])
+    return captions
 
 
-def resolve_metadata_idx_based_on_anchor_timestamp(anchor_timestamp: float) -> int:
-    """
-    For current implementation (1 segment per second), the index is simply floor(anchor_timestamp).
-    """  # for i, m in enumerate(metadata):
-    #     start, end = m["timestamps"][0], m["timestamps"][-1]
-    #     if start <= anchor_timestamp < end:
-    #         return i
-    # return None
-    # For the current implementation, where we have 1 segment per each second, finding
-    # the correct index is as easy as:
-    return math.floor(anchor_timestamp)
+def resolve_anchor_index(anchor_timestamp: float, flattened_metadata: Any) -> int:
+    for idx, metadata in enumerate(flattened_metadata):
+        start = math.floor(metadata["timestamps"][0])
+        end = math.ceil(metadata["timestamps"][-1])
+        if start <= anchor_timestamp < end:
+            return idx
+    raise ValueError("Anchor timestamp not found in flattened metadata")
 
 
 def resolve_embedding_at_idx(
@@ -94,61 +78,73 @@ def resolve_embedding_at_idx(
     return mean_embedding / np.linalg.norm(mean_embedding)
 
 
-def cosine_sim(embeddings1: np.ndarray, embeddings2: np.ndarray) -> float:
-    """
-    Cosine similarity assuming embeddings are already normalized upstream.
-    """
-    return float(np.dot(embeddings1, embeddings2))
+def resolve_embedding_at_idx(
+    flattened_metadata: List[Dict[str, Any]],
+    idx: int,
+    embeddings_to_include: int,
+    lavila_embeddings_client: SQLiteClient,
+    seed: str = None,
+) -> np.ndarray:
+    captions = flattened_metadata[idx]["captions"]
+
+    rng = random.Random(f"{seed}:{idx}" if seed is not None else str(idx))
+    chosen = rng.sample(captions, embeddings_to_include)
+
+    embeddings = []
+    for caption in chosen:
+        processed = preprocess_captions([caption])[0]
+        embedding = lavila_embeddings_client.get_embedding(processed)
+        embeddings.append(np.asarray(embedding, dtype=np.float32))
+
+    mean_embedding = np.mean(np.stack(embeddings, axis=0), axis=0)
+    return mean_embedding / np.linalg.norm(mean_embedding)
 
 
 def expand_window(
-    metadata: List[Dict[str, Any]],
-    anchor_caption_embedding: np.ndarray,
+    flattened_metadata: List[Dict[str, Any]],
+    anchor_embedding: np.ndarray,
     anchor_idx: int,
     tau: float,
     lavila_embeddings_client: SQLiteClient,
     embeddings_to_include: int,
-    video_id: str,
+    seed: str,
 ) -> (float, float):
     """
     Expand from anchor_idx left and right while similarity >= tau.
     Uses get_idx_embedding(idx) to retrieve/calc embeddings with caching.
     """
-    n = len(metadata)
-    if n == 0:
-        raise ValueError("Empty metadata timeline; cannot expand window.")
 
     # Expand left
     left = anchor_idx
     while left - 1 >= 0:
-        emb_left = resolve_embedding_at_idx(
-            metadata,
+        embedding = resolve_embedding_at_idx(
+            flattened_metadata,
             left - 1,
             embeddings_to_include,
             lavila_embeddings_client,
-            video_id,
+            seed,
         )
-        if cosine_sim(anchor_caption_embedding, emb_left) < tau:
+        if cosine_sim(anchor_embedding, embedding) < tau:
             break
         left -= 1
 
     # Expand right
     right = anchor_idx
-    while right + 1 < n:
-        emb_right = resolve_embedding_at_idx(
-            metadata,
+    while right + 1 < len(flattened_metadata):
+        embedding = resolve_embedding_at_idx(
+            flattened_metadata,
             right + 1,
             embeddings_to_include,
             lavila_embeddings_client,
-            video_id,
+            seed,
         )
-        if cosine_sim(anchor_caption_embedding, emb_right) < tau:
+        if cosine_sim(anchor_embedding, embedding) < tau:
             break
         right += 1
 
-    new_start = metadata[left]["timestamps"][0]
-    new_end = metadata[right]["timestamps"][-1]
-    return new_start, new_end
+    return math.floor(flattened_metadata[left]["timestamps"][0]), math.ceil(
+        flattened_metadata[right]["timestamps"][-1]
+    )
 
 
 def main(args):
@@ -183,18 +179,14 @@ def main(args):
         # The anchor caption against which the similarities are computed.
         anchor_caption = ego4d_embeddings.get_embedding(caption)
 
-        video_chunks_paths = resolve_video_chunk_path(
-            video_id, start, end, args.chunk_size
+        flattened_metadata = load_all_chunks_metadata_for_video(
+            args.chunk_metadata_root, video_id
         )
 
-        video_chunks_metadata = get_chunks_metadata(
-            args.chunk_metadata_root, video_chunks_paths
-        )
-
-        anchor_idx = resolve_metadata_idx_based_on_anchor_timestamp(anchor_timestamp)
+        anchor_idx = resolve_anchor_index(anchor_timestamp, flattened_metadata)
 
         new_start, new_end = expand_window(
-            video_chunks_metadata,
+            flattened_metadata,
             anchor_caption,
             anchor_idx,
             args.tau,
@@ -204,6 +196,15 @@ def main(args):
         )
 
         results.append((video_id, new_start, new_end, original_caption))
+
+    with open(
+        Path(args.output_path)
+        / f"ego4d_train_tau_{args.tau}_embeddings_{args.embeddings_to_include}.pkl",
+        "wb",
+    ) as f:
+        pickle.dump(results, f)
+
+    print(f"Saved {len(results)} results to {args.output_path}")
 
 
 if __name__ == "__main__":
@@ -240,13 +241,6 @@ if __name__ == "__main__":
         type=int,
         default=4,
         help="Number of embeddings to include for each segment",
-    )
-    parser.add_argument("--chunk-size", type=int, default=15, help="Seconds per chunk")
-    parser.add_argument(
-        "--video-root",
-        type=str,
-        default="",
-        help="Root directory for videos",
     )
     parser.add_argument(
         "--output-path", type=str, required=True, help="Pickle output file"

@@ -27,3 +27,6 @@ python3 -m second_party.postprocess.random_shift \
     --dataset /ptmp/dduka/databases/ego4d/ego4d_train.pkl \
     --output-path /ptmp/dduka/databases/ego4d \
     --video-root /ptmp/dduka/databases/ego4d/ego4d/v2/full_scale/ \
+    --scale-min 1.2 \
+    --scale-max 2.0 \
+    --min-duration 1.0 \
