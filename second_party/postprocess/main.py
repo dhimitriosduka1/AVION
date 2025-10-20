@@ -8,10 +8,25 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 from pathlib import Path
+from matplotlib import pyplot as plt
 from typing import List, Dict, Any, Tuple
 from collections import defaultdict
 from second_party.storage.sqlite import SQLiteClient
 from second_party.preprocess.utils import preprocess_captions
+
+
+def plot_segment_len_dist(segment_lengths: List[float], title: str):
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    plt.hist(segment_lengths, bins=100)
+    ax.set_title(title)
+    ax.set_xlabel("Length (seconds)")
+    ax.set_ylabel("Frequency")
+    ax.set_yscale("log")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+
+    return fig
 
 
 def cosine_sim(embeddings1: np.ndarray, embeddings2: np.ndarray) -> float:
@@ -162,6 +177,10 @@ def main(args):
     # Results will be stored with their original index
     results_dict = {}
 
+    stats_dict = {
+        "old_timestamps_duration": [],
+        "new_timestamps_duration": [],
+    }
     # Process one video at a time
     for i, (video_id, samples) in enumerate(
         tqdm(enumerate(video_groups.items()), desc="Processing videos")
@@ -204,6 +223,9 @@ def main(args):
                 original_caption,
             )
 
+            stats_dict["old_timestamps_duration"].append(end - start)
+            stats_dict["new_timestamps_duration"].append(new_end - new_start)
+
         # Throttle W&B logging
         if (i % args.log_every) == 0:
             wandb.log({"progress": (i + 1) / len(video_groups)}, step=i + 1)
@@ -222,6 +244,38 @@ def main(args):
         pickle.dump(results, f)
 
     print(f"Saved {len(results)} results to {output_file}")
+
+    original_distribution = plot_segment_len_dist(
+        segment_lengths=stats_dict["old_timestamps_duration"],
+        title="Segment Lengths Histogram (Original)",
+    )
+
+    shifted_timestamps_distribution = plot_segment_len_dist(
+        segment_lengths=stats_dict["new_timestamps_duration"],
+        title="Segment Lengths Histogram (Shifted Timestamps)",
+    )
+
+    table = wandb.Table(columns=["Metric", "Mean", "Std"])
+
+    table.add_data(
+        "Timestamp Duration (Original)",
+        np.mean(stats_dict["old_timestamps_duration"]),
+        np.std(stats_dict["old_timestamps_duration"]),
+    )
+
+    table.add_data(
+        "Timestamp Duration (Jittered)",
+        np.mean(stats_dict["new_timestamps_duration"]),
+        np.std(stats_dict["new_timestamps_duration"]),
+    )
+
+    wandb.log(
+        {
+            "table": table,
+            "original_timestamp_dist": wandb.Image(original_distribution),
+            "shifted_timestamp_dist": wandb.Image(shifted_timestamps_distribution),
+        }
+    )
 
     wandb.finish()
 
