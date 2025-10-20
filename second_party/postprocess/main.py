@@ -137,9 +137,9 @@ def main(args):
 
     wandb.init(
         project="Thesis",
-        name=f"Similarity Based Timestamp Shifting - {args.tau} - {args.embeddings_to_include}",
+        name=f"Threshold {args.tau} - Embeddings Number {args.embeddings_to_include} - Temperature {args.temperature}",
         config={**args.__dict__},
-        group=f"Similarity Based Timestamp Shifting",
+        group=f"Similarity Based Timestamp Shifting - {args.embedding_model}",
     )
 
     print(f"Opening {args.dataset} dataset")
@@ -211,14 +211,19 @@ def main(args):
     # Reconstruct results in original order
     results = [results_dict[i] for i in range(len(data))]
 
+    os.makedirs(Path(args.output_path) / args.embedding_model, exist_ok=True)
+
     output_file = (
         Path(args.output_path)
-        / f"ego4d_train_tau_{args.tau}_embeddings_{args.embeddings_to_include}.pkl"
+        / args.embedding_model
+        / f"ego4d_train_temperature_{args.temperature}_threshold_{args.tau}_embeddings_{args.embeddings_to_include}.pkl"
     )
     with open(output_file, "wb") as f:
         pickle.dump(results, f)
 
     print(f"Saved {len(results)} results to {output_file}")
+
+    wandb.finish()
 
 
 if __name__ == "__main__":
@@ -246,6 +251,18 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help="Root folder containing per-chunk captions metadata JSONs",
+    )
+    parser.add_argument(
+        "--embedding-model",
+        type=str,
+        required=True,
+        help="Embedding model used to extract embeddings",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        required=True,
+        help="Temperature used to generate captions with LaViLa model",
     )
     parser.add_argument(
         "--tau", type=float, default=0.7, help="Cosine similarity threshold"
