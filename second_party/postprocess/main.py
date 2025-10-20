@@ -108,6 +108,7 @@ def expand_window(
     tau: float,
     lavila_embeddings_client: SQLiteClient,
     embeddings_to_include: int,
+    video_id: str,
 ) -> (float, float):
     """
     Expand from anchor_idx left and right while similarity >= tau.
@@ -121,7 +122,11 @@ def expand_window(
     left = anchor_idx
     while left - 1 >= 0:
         emb_left = resolve_embedding_at_idx(
-            metadata, left - 1, embeddings_to_include, lavila_embeddings_client
+            metadata,
+            left - 1,
+            embeddings_to_include,
+            lavila_embeddings_client,
+            video_id,
         )
         if cosine_sim(anchor_caption_embedding, emb_left) < tau:
             break
@@ -131,7 +136,11 @@ def expand_window(
     right = anchor_idx
     while right + 1 < n:
         emb_right = resolve_embedding_at_idx(
-            metadata, right + 1, embeddings_to_include, lavila_embeddings_client
+            metadata,
+            right + 1,
+            embeddings_to_include,
+            lavila_embeddings_client,
+            video_id,
         )
         if cosine_sim(anchor_caption_embedding, emb_right) < tau:
             break
@@ -164,11 +173,12 @@ def main(args):
     lavila_embeddings = SQLiteClient(args.lavila_embeddings_path)
     print(f"Loaded {lavila_embeddings.count_embeddings()} lavila embeddings")
 
+    results = []
     for sample in tqdm(data, desc="Processing samples"):
-        video_id, start, end, caption = sample
+        video_id, start, end, original_caption = sample
         anchor_timestamp = 0.5 * (start + end)
 
-        caption = preprocess_captions([caption])[0]
+        caption = preprocess_captions([original_caption])[0]
 
         # The anchor caption against which the similarities are computed.
         anchor_caption = ego4d_embeddings.get_embedding(caption)
@@ -180,6 +190,20 @@ def main(args):
         video_chunks_metadata = get_chunks_metadata(
             args.chunk_metadata_root, video_chunks_paths
         )
+
+        anchor_idx = resolve_metadata_idx_based_on_anchor_timestamp(anchor_timestamp)
+
+        new_start, new_end = expand_window(
+            video_chunks_metadata,
+            anchor_caption,
+            anchor_idx,
+            args.tau,
+            lavila_embeddings,
+            args.embeddings_to_include,
+            video_id,
+        )
+
+        results.append((video_id, new_start, new_end, original_caption))
 
 
 if __name__ == "__main__":
