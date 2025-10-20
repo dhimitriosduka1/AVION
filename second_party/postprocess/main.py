@@ -15,6 +15,7 @@ from second_party.preprocess.utils import preprocess_captions
 random.seed(42)
 np.random.seed(42)
 
+
 def resolve_video_chunk_path(video_id, start, end, chunk_size=15):
     """
     Return the list of chunk file paths that together cover the timeline [start, end).
@@ -194,6 +195,15 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help="Root folder containing per-chunk captions metadata JSONs",
+    )
+    parser.add_argument(
+        "--tau", type=float, default=0.7, help="Cosine similarity threshold"
+    )
+    parser.add_argument(
+        "--embeddings-to-include",
+        type=int,
+        default=4,
+        help="Number of embeddings to include for each segment",
     )
     parser.add_argument("--chunk-size", type=int, default=15, help="Seconds per chunk")
     parser.add_argument(
