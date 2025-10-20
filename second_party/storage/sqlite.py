@@ -15,6 +15,13 @@ PRAGMA locking_mode=EXCLUSIVE;
 PRAGMA foreign_keys=OFF;
 """
 
+# Conservatively tuned pragmas for read-only access on shared/network filesystems.
+_BASE_RO_PRAGMAS = """
+PRAGMA query_only=ON;
+PRAGMA temp_store=MEMORY;
+PRAGMA foreign_keys=OFF;
+"""
+
 _NEW_DB_PRAGMAS = """
 PRAGMA page_size=32768;
 PRAGMA cache_size=-524288;
@@ -41,23 +48,44 @@ ArrayLike = Union[np.ndarray, Sequence[float], bytes, bytearray, memoryview]
 class SQLiteClient:
     """Minimal SQLite client for reading/writing embeddings only."""
 
-    def __init__(self, db_path: Union[str, Path], init_schema: bool = True) -> None:
+    def __init__(
+        self,
+        db_path: Union[str, Path],
+        init_schema: bool = True,
+        *,
+        read_only: bool = False,
+        immutable: bool = False,
+        timeout: float = 5.0,
+    ) -> None:
         self.db_path = Path(db_path)
         self._conn: Optional[sqlite3.Connection] = None
+        self._read_only = read_only
+        self._immutable = immutable
+        self._timeout = timeout
         self._connect_and_prepare(init_schema=init_schema)
 
     # ---- lifecycle ----
     def _connect_and_prepare(self, init_schema: bool) -> None:
         new_db = not self.db_path.exists()
-        self._conn = sqlite3.connect(str(self.db_path))
+        if self._read_only:
+            # Use SQLite URI to open in read-only mode. immutable=1 hints that the file will not change.
+            uri = f"file:{self.db_path}?mode=ro"
+            if self._immutable:
+                uri += "&immutable=1"
+            self._conn = sqlite3.connect(uri, uri=True, timeout=self._timeout)
+        else:
+            self._conn = sqlite3.connect(str(self.db_path), timeout=self._timeout)
         self._conn.row_factory = sqlite3.Row
         cur = self._conn.cursor()
-        cur.executescript(_BASE_PRAGMAS)
-        if new_db:
-            cur.executescript(_NEW_DB_PRAGMAS)
-        if init_schema:
-            cur.executescript(_SCHEMA_SQL)
-            self._conn.commit()
+        if self._read_only:
+            cur.executescript(_BASE_RO_PRAGMAS)
+        else:
+            cur.executescript(_BASE_PRAGMAS)
+            if new_db:
+                cur.executescript(_NEW_DB_PRAGMAS)
+            if init_schema:
+                cur.executescript(_SCHEMA_SQL)
+                self._conn.commit()
 
     def close(self) -> None:
         if self._conn is not None:
