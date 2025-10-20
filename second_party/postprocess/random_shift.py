@@ -116,7 +116,7 @@ def main(args):
 
     wandb.init(
         project="Thesis",
-        name=f"Random Shift - {args.scale_min} - {args.scale_max} - {args.min_duration} - {args.max_duration}",
+        name=f"Random Shift - {args.scale_min} - {args.scale_max} - {args.min_duration}",
         config={**args.__dict__},
         group=f"Random Timestamp Shift",
     )
@@ -136,7 +136,7 @@ def main(args):
     video_ids = [sample[0] for sample in data]
     durations = index_video_durations(Path(args.video_root), video_ids)
 
-    max_duration = durations[max(durations, key=durations.get)]
+    args["max_duration"] = durations[max(durations, key=durations.get)]
 
     scales = rng.uniform(args.scale_min, args.scale_max, size=total)
 
@@ -159,7 +159,7 @@ def main(args):
             start=sample[1],
             end=sample[2],
             min_duration=args.min_duration,
-            max_duration=max_duration,
+            max_duration=args.max_duration,
             video_duration=vdur,
             scale_factor=float(scales[i]),
         )
