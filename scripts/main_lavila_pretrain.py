@@ -213,6 +213,7 @@ def get_args_parser():
 
     parser.add_argument("--wandb-project-name", default="Thesis", type=str)
     parser.add_argument("--wandb-run-name", default=None, type=str, required=True)
+    parser.add_argument("--wandb-group", type=str, required=False)
 
     # For performing some testing without training
     parser.add_argument(
@@ -249,6 +250,7 @@ def main(args):
             id=args.wandb_run_name,  # use run name as id
             tags=[],
             resume="allow",
+            group=args.wandb_group,
             config=vars(args),
         )
 
