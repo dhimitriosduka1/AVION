@@ -136,6 +136,8 @@ def main(args):
     video_ids = [sample[0] for sample in data]
     durations = index_video_durations(Path(args.video_root), video_ids)
 
+    max_duration = durations[max(durations, key=durations.get)]
+
     scales = rng.uniform(args.scale_min, args.scale_max, size=total)
 
     result = {
@@ -157,7 +159,7 @@ def main(args):
             start=sample[1],
             end=sample[2],
             min_duration=args.min_duration,
-            max_duration=args.max_duration,
+            max_duration=max_duration,
             video_duration=vdur,
             scale_factor=float(scales[i]),
         )
