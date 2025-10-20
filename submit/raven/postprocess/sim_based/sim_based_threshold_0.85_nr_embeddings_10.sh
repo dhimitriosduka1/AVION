@@ -9,7 +9,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=72
 
-#SBATCH --time=11:59:59
+#SBATCH --time=05:59:59
 #SBATCH --partition=standard
 
 # Load required modules
@@ -30,6 +30,6 @@ python3 -m second_party.postprocess.main \
     --chunk-metadata-root /ptmp/dduka/databases/ego4d/video_320px_15sec/lavila_captions_num_frames_4/temperature_0.7 \
     --embedding-model PE-Core-bigG-14-448_meta \
     --temperature 0.7 \
-    --tau 0.9 \
+    --tau 0.85 \
     --embeddings-to-include 10 \
     --output-path /ptmp/dduka/databases/ego4d/similarity_based_shift_timestamps/ \
