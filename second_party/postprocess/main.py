@@ -43,24 +43,25 @@ def compute_intersection_stats(
     intersection_start = max(original_start, new_start)
     intersection_end = min(original_end, new_end)
     intersection = max(0, intersection_end - intersection_start)
-    
+
     # Union
     union_start = min(original_start, new_start)
     union_end = max(original_end, new_end)
     union = union_end - union_start
-    
+
     # IoU (Intersection over Union)
     iou = intersection / union if union > 0 else 0.0
-    
+
     # Duration metrics
     original_duration = original_end - original_start
     new_duration = new_end - new_start
     expansion_ratio = new_duration / original_duration if original_duration > 0 else 1.0
-    
+
     return {
         "iou": iou,
         "expansion_ratio": expansion_ratio,
     }
+
 
 def cosine_sim(embeddings1: np.ndarray, embeddings2: np.ndarray) -> float:
     """
@@ -217,7 +218,11 @@ def main(args):
         "expansion_ratio": [],
     }
     # Process one video at a time
-    for i, (video_id, samples) in tqdm(enumerate(video_groups.items()), desc="Processing videos", total=len(video_groups)):
+    for i, (video_id, samples) in tqdm(
+        enumerate(video_groups.items()),
+        desc="Processing videos",
+        total=len(video_groups),
+    ):
         # Load metadata once per video
         flattened_metadata = load_all_chunks_metadata_for_video(
             args.chunk_metadata_root, f"{video_id}.mp4"
@@ -292,7 +297,17 @@ def main(args):
         title="Segment Lengths Histogram (Shifted Timestamps)",
     )
 
-    table = wandb.Table(columns=["Dataset", "Mean Timestamp Duration", "Std Timestamp Duration", "Mean IoU", "Std IoU", "Mean Expansion Ratio", "Std Expansion Ratio"])
+    table = wandb.Table(
+        columns=[
+            "Dataset",
+            "Mean Timestamp Duration",
+            "Std Timestamp Duration",
+            "Mean IoU",
+            "Std IoU",
+            "Mean Expansion Ratio",
+            "Std Expansion Ratio",
+        ]
+    )
 
     table.add_data(
         "Original",
