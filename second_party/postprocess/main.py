@@ -1,6 +1,7 @@
 import os
 import json
 import math
+import wandb
 import random
 import pickle
 import argparse
@@ -11,9 +12,6 @@ from typing import List, Dict, Any, Tuple
 from collections import defaultdict
 from second_party.storage.sqlite import SQLiteClient
 from second_party.preprocess.utils import preprocess_captions
-
-random.seed(42)
-np.random.seed(42)
 
 
 def cosine_sim(embeddings1: np.ndarray, embeddings2: np.ndarray) -> float:
@@ -133,6 +131,17 @@ def main(args):
         ".sqlite"
     ), "LaViLa embeddings must be a sqlite file"
 
+    # Reproducibility
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+
+    wandb.init(
+        project="Thesis",
+        name=f"Similarity Based Timestamp Shifting - {args.tau} - {args.embeddings_to_include}",
+        config={**args.__dict__},
+        group=f"Similarity Based Timestamp Shifting",
+    )
+
     print(f"Opening {args.dataset} dataset")
     with open(args.dataset, "rb") as f:
         data = pickle.load(f)
@@ -154,7 +163,9 @@ def main(args):
     results_dict = {}
 
     # Process one video at a time
-    for video_id, samples in tqdm(video_groups.items(), desc="Processing videos"):
+    for i, (video_id, samples) in enumerate(
+        tqdm(enumerate(video_groups.items()), desc="Processing videos")
+    ):
         # Load metadata once per video
         flattened_metadata = load_all_chunks_metadata_for_video(
             args.chunk_metadata_root, f"{video_id}.mp4"
@@ -192,6 +203,10 @@ def main(args):
                 new_end,
                 original_caption,
             )
+
+        # Throttle W&B logging
+        if (i % args.log_every) == 0:
+            wandb.log({"progress": (i + 1) / len(video_groups)}, step=i + 1)
 
     # Reconstruct results in original order
     results = [results_dict[i] for i in range(len(data))]
@@ -243,6 +258,10 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--output-path", type=str, required=True, help="Pickle output file"
+    )
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument(
+        "--log-every", type=int, default=100, help="Log every n samples"
     )
     args = parser.parse_args()
     main(args)
