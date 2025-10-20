@@ -193,7 +193,7 @@ def main(args):
 
     print(f"Opening {args.dataset} dataset")
     with open(args.dataset, "rb") as f:
-        data = pickle.load(f)[:1000]
+        data = pickle.load(f)
     print(f"Loaded {len(data)} samples")
 
     print(f"Opening {args.ego4d_embeddings_path} embeddings")
