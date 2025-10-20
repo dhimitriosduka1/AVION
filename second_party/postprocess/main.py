@@ -180,7 +180,7 @@ def main(args):
         anchor_caption = ego4d_embeddings.get_embedding(caption)
 
         flattened_metadata = load_all_chunks_metadata_for_video(
-            args.chunk_metadata_root, video_id
+            args.chunk_metadata_root, f"{video_id}.mp4"
         )
 
         anchor_idx = resolve_anchor_index(anchor_timestamp, flattened_metadata)
