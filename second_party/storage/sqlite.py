@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Optional, Sequence, Tuple, Union
+from typing import Iterable, List, Optional, Sequence, Tuple, Union
 import sqlite3
 
 import numpy as np
@@ -126,7 +126,29 @@ class SQLiteClient:
         conn = self._ensure_conn()
         return conn.execute("SELECT COUNT(*) FROM embedding").fetchone()[0]
 
-    # (no extra utilities; write and read only)
+    def get_all_embeddings(self) -> List[Tuple[str, np.ndarray]]:
+        conn = self._ensure_conn()
+        rows = conn.execute("SELECT caption, emb FROM embedding").fetchall()
+        return [
+            (row["caption"], np.frombuffer(row["emb"], dtype=np.float32))
+            for row in rows
+        ]
+
+    def iter_embeddings(
+        self,
+        batch_size: int = 1000,
+        dtype: Union[np.dtype, str] = np.float32,
+    ) -> Iterable[List[Tuple[str, np.ndarray]]]:
+        conn = self._ensure_conn()
+        cur = conn.execute("SELECT caption, emb FROM embedding")
+
+        while True:
+            rows = cur.fetchmany(batch_size)
+            if not rows:
+                break
+            yield [
+                (row["caption"], np.frombuffer(row["emb"], dtype=dtype)) for row in rows
+            ]
 
     def _ensure_conn(self) -> sqlite3.Connection:
         if self._conn is None:
