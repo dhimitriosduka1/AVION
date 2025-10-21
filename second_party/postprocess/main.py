@@ -11,6 +11,8 @@ from pathlib import Path
 from matplotlib import pyplot as plt
 from typing import List, Dict, Any, Tuple
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
 from second_party.preprocess.utils import preprocess_captions
 
 
@@ -36,7 +38,7 @@ def compute_intersection_stats(
 ) -> Dict[str, float]:
     """
     Compute intersection statistics between original and new time windows.
-    Returns IoU, expansion ratio, and absolute change in duration.
+    Returns IoU and expansion ratio.
     """
     # Intersection
     intersection_start = max(original_start, new_start)
@@ -76,7 +78,7 @@ def load_all_chunks_metadata_for_video(chunk_metadata_root: str, video_id: str):
         with open(chunk_path, "r", encoding="utf-8") as f:
             chunk_start_offset = int(str(chunk_path).split("/")[-2].split(".")[0])
             metadata = json.load(f)["metadata"]
-            # Update the timestamp so that it is offsetted by the chunk start
+            # Update the timestamp so that it is offset by the chunk start
             for m in metadata:
                 m["timestamps"] = [x + chunk_start_offset for x in m["timestamps"]]
             captions.extend(metadata)
@@ -160,10 +162,10 @@ def expand_window(
 
 def group_samples_by_video(
     data: List[Tuple],
-) -> Tuple[Dict[str, List[Tuple]], List[int]]:
+) -> Dict[str, List[Tuple]]:
     """
     Group samples by video_id for batch processing.
-    Returns: (video_groups, original_indices) where original_indices maps back to input order.
+    Returns: video_groups mapping to lists of (idx, start, end, original_caption)
     """
     video_groups = defaultdict(list)
     for idx, sample in enumerate(data):
@@ -172,10 +174,123 @@ def group_samples_by_video(
     return video_groups
 
 
+# -------------------- Parallel worker plumbing --------------------
+
+# Globals initialized once per process (in _init_worker)
+_WORKER: Dict[str, Any] = {
+    "args": None,
+    "ego4d_embeddings": None,
+    "ego4d_unique_captions": None,
+    "lavila_embeddings": None,
+    "lavila_unique_captions": None,
+}
+
+
+def _init_worker(args_dict: Dict[str, Any]):
+    """
+    Runs once per worker process. Opens memmaps and JSON maps in *this* process.
+    """
+    _WORKER["args"] = args_dict
+
+    # Ego4D
+    ego4d_shape = json.load(
+        open(os.path.join(args_dict["ego4d_embeddings_path"], "shape.json"), "r")
+    )
+    _WORKER["ego4d_embeddings"] = np.memmap(
+        os.path.join(args_dict["ego4d_embeddings_path"], "embeddings.memmap"),
+        mode="r",
+        dtype=np.float32,
+        shape=tuple(ego4d_shape["shape"]),
+    )
+    _WORKER["ego4d_unique_captions"] = json.load(
+        open(os.path.join(args_dict["ego4d_embeddings_path"], "captions.json"), "r")
+    )
+
+    # LaViLa
+    lavila_shape = json.load(
+        open(os.path.join(args_dict["lavila_embeddings_path"], "shape.json"), "r")
+    )
+    _WORKER["lavila_embeddings"] = np.memmap(
+        os.path.join(args_dict["lavila_embeddings_path"], "embeddings.memmap"),
+        mode="r",
+        dtype=np.float32,
+        shape=tuple(lavila_shape["shape"]),
+    )
+    _WORKER["lavila_unique_captions"] = json.load(
+        open(os.path.join(args_dict["lavila_embeddings_path"], "captions.json"), "r")
+    )
+
+
+def _process_one_video(payload: Tuple[str, List[Tuple]]):
+    """
+    Worker: process one video's samples.
+    payload: (video_id, samples) where samples = [(original_idx, start, end, original_caption), ...]
+    Returns: (results_dict_for_video, stats_dict_for_video)
+    """
+    video_id, samples = payload
+    args = _WORKER["args"]
+
+    # Load metadata and precompute embeddings for this video
+    flattened_metadata = load_all_chunks_metadata_for_video(
+        args["chunk_metadata_root"], f"{video_id}.mp4"
+    )
+
+    precomputed_embeddings = precompute_video_embeddings(
+        flattened_metadata=flattened_metadata,
+        embeddings_to_include=args["embeddings_to_include"],
+        lavila_embeddings=_WORKER["lavila_embeddings"],
+        lavila_unique_captions=_WORKER["lavila_unique_captions"],
+        seed=video_id,
+    )
+
+    ego4d_embeddings = _WORKER["ego4d_embeddings"]
+    ego4d_unique_captions = _WORKER["ego4d_unique_captions"]
+
+    local_results: Dict[int, Tuple[str, float, float, str]] = {}
+    local_stats = {
+        "old_timestamps_duration": [],
+        "new_timestamps_duration": [],
+        "iou": [],
+        "expansion_ratio": [],
+    }
+
+    for original_idx, start, end, original_caption in samples:
+        anchor_timestamp = 0.5 * (start + end)
+        caption = preprocess_captions([original_caption])[0]
+
+        # Resolve anchor caption -> ego4d embedding
+        resolved_index = ego4d_unique_captions[caption]
+        anchor_caption = ego4d_embeddings[resolved_index]
+
+        anchor_idx = resolve_anchor_index(anchor_timestamp, flattened_metadata)
+
+        new_start, new_end = expand_window(
+            precomputed_embeddings,
+            flattened_metadata,
+            anchor_caption,
+            anchor_idx,
+            args["tau"],
+        )
+
+        local_results[original_idx] = (video_id, new_start, new_end, original_caption)
+
+        local_stats["old_timestamps_duration"].append(end - start)
+        local_stats["new_timestamps_duration"].append(new_end - new_start)
+
+        s = compute_intersection_stats(start, end, new_start, new_end)
+        local_stats["iou"].append(s["iou"])
+        local_stats["expansion_ratio"].append(s["expansion_ratio"])
+
+    return local_results, local_stats
+
+
+# -------------------- Main --------------------
+
+
 def main(args):
     assert args.dataset.endswith(".pkl"), "Dataset must be a pickle file"
 
-    # Reproducibility
+    # Reproducibility for any rng used in parent
     random.seed(args.seed)
     np.random.seed(args.seed)
 
@@ -191,108 +306,87 @@ def main(args):
         data = pickle.load(f)
     print(f"Loaded {len(data)} samples")
 
+    # Optional: open shapes in parent to report counts (workers open real memmaps)
     print(f"Opening {args.ego4d_embeddings_path} embeddings")
     ego4d_embeddings_shape = json.load(
         open(os.path.join(args.ego4d_embeddings_path, "shape.json"), "r")
     )
-    ego4d_embeddings = np.memmap(
-        os.path.join(args.ego4d_embeddings_path, "embeddings.memmap"),
-        mode="r",
-        dtype=np.float32,
-        shape=tuple(ego4d_embeddings_shape["shape"]),
-    )
-    print(f"Loaded {ego4d_embeddings.shape[0]} ego4d embeddings")
+    print(f"Loaded {ego4d_embeddings_shape['shape'][0]} ego4d embeddings")
     ego4d_unique_captions = json.load(
         open(os.path.join(args.ego4d_embeddings_path, "captions.json"), "r")
     )
-
     print(f"Loaded {len(ego4d_unique_captions)} ego4d unique captions")
 
     print(f"Opening {args.lavila_embeddings_path} embeddings")
     lavila_embeddings_shape = json.load(
         open(os.path.join(args.lavila_embeddings_path, "shape.json"), "r")
     )
-    lavila_embeddings = np.memmap(
-        os.path.join(args.lavila_embeddings_path, "embeddings.memmap"),
-        mode="r",
-        dtype=np.float32,
-        shape=tuple(lavila_embeddings_shape["shape"]),
-    )
-    print(f"Loaded {lavila_embeddings.shape[0]} lavila embeddings")
+    print(f"Loaded {lavila_embeddings_shape['shape'][0]} lavila embeddings")
     lavila_unique_captions = json.load(
         open(os.path.join(args.lavila_embeddings_path, "captions.json"), "r")
     )
     print(f"Loaded {len(lavila_unique_captions)} lavila unique captions")
 
-    # Group samples by video
+    # Group samples by video for batch processing
     video_groups = group_samples_by_video(data)
     print(f"Processing {len(video_groups)} unique videos")
 
-    # Results will be stored with their original index
-    results_dict = {}
-
+    # Merge containers
+    results_dict: Dict[int, Tuple[str, float, float, str]] = {}
     stats_dict = {
         "old_timestamps_duration": [],
         "new_timestamps_duration": [],
         "iou": [],
         "expansion_ratio": [],
     }
-    # Process one video at a time
-    for i, (video_id, samples) in tqdm(
-        enumerate(video_groups.items()),
-        desc="Processing videos",
-        total=len(video_groups),
-    ):
-        # Load metadata once per video
-        flattened_metadata = load_all_chunks_metadata_for_video(
-            args.chunk_metadata_root, f"{video_id}.mp4"
-        )
 
-        # Precompute all embeddings for this video once
-        precomputed_embeddings = precompute_video_embeddings(
-            flattened_metadata=flattened_metadata,
-            embeddings_to_include=args.embeddings_to_include,
-            lavila_embeddings=lavila_embeddings,
-            lavila_unique_captions=lavila_unique_captions,
-            seed=video_id,
-        )
+    # Prepare args for worker initializer (only simple types!)
+    init_args = {
+        "ego4d_embeddings_path": args.ego4d_embeddings_path,
+        "lavila_embeddings_path": args.lavila_embeddings_path,
+        "chunk_metadata_root": args.chunk_metadata_root,
+        "embeddings_to_include": args.embeddings_to_include,
+        "tau": args.tau,
+    }
 
-        # Process all samples for this video
-        for original_idx, start, end, original_caption in samples:
-            anchor_timestamp = 0.5 * (start + end)
-            caption = preprocess_captions([original_caption])[0]
+    items = list(video_groups.items())
+    total_videos = len(items)
 
-            # Resolve the anchor caption index
-            resolved_index = ego4d_unique_captions[caption]
-            anchor_caption = ego4d_embeddings[resolved_index]
+    if args.num_workers == 1:
+        # Serial fallback
+        _init_worker(init_args)
+        for i, item in enumerate(
+            tqdm(items, total=total_videos, desc="Processing videos (serial)")
+        ):
+            local_results, local_stats = _process_one_video(item)
+            results_dict.update(local_results)
+            for k in stats_dict:
+                stats_dict[k].extend(local_stats[k])
+            if ((i + 1) % args.log_every) == 0:
+                wandb.log({"progress": (i + 1) / total_videos}, step=i + 1)
+    else:
+        # Parallel path
+        with ProcessPoolExecutor(
+            max_workers=args.num_workers,
+            initializer=_init_worker,
+            initargs=(init_args,),
+        ) as ex:
+            futures = [ex.submit(_process_one_video, item) for item in items]
+            for i, fut in enumerate(
+                tqdm(
+                    as_completed(futures),
+                    total=total_videos,
+                    desc="Processing videos (parallel)",
+                )
+            ):
+                local_results, local_stats = fut.result()
+                results_dict.update(local_results)
 
-            anchor_idx = resolve_anchor_index(anchor_timestamp, flattened_metadata)
+                for k in stats_dict:
+                    stats_dict[k].extend(local_stats[k])
 
-            new_start, new_end = expand_window(
-                precomputed_embeddings,
-                flattened_metadata,
-                anchor_caption,
-                anchor_idx,
-                args.tau,
-            )
-
-            results_dict[original_idx] = (
-                video_id,
-                new_start,
-                new_end,
-                original_caption,
-            )
-
-            stats_dict["old_timestamps_duration"].append(end - start)
-            stats_dict["new_timestamps_duration"].append(new_end - new_start)
-
-            compute_stats = compute_intersection_stats(start, end, new_start, new_end)
-            stats_dict["iou"].append(compute_stats["iou"])
-            stats_dict["expansion_ratio"].append(compute_stats["expansion_ratio"])
-
-        # Throttle W&B logging
-        if (i % args.log_every) == 0:
-            wandb.log({"progress": (i + 1) / len(video_groups)}, step=i + 1)
+                if ((i + 1) % args.log_every) == 0:
+                    wandb.log({"progress": (i + 1) / total_videos}, step=i + 1)
 
     # Reconstruct results in original order
     results = [results_dict[i] for i in range(len(data))]
@@ -414,7 +508,13 @@ if __name__ == "__main__":
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument(
-        "--log-every", type=int, default=100, help="Log every n samples"
+        "--log-every", type=int, default=100, help="Log progress every N videos"
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=min(8, os.cpu_count() or 1),
+        help="Number of parallel worker processes for per-video processing",
     )
     args = parser.parse_args()
     main(args)
