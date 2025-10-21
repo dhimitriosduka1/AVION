@@ -29,5 +29,5 @@ python3 -m second_party.text_embedder.models.clip.main \
     --model-name PE-Core-bigG-14-448 \
     --pretrained meta \
     --flush-frequency 200 \
-    --batch-size 512 \
+    --batch-size 1024 \
     --num-workers 8

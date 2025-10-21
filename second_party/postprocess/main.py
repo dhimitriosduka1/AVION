@@ -87,13 +87,20 @@ def load_all_chunks_metadata_for_video(chunk_metadata_root: str, video_id: str):
     return captions
 
 
-def resolve_anchor_index(anchor_timestamp: float, flattened_metadata: Any) -> int:
+def resolve_anchor_index(
+    video_id: str, anchor_timestamp: float, flattened_metadata: Any
+) -> int:
+    """
+    Resolve the index of the anchor timestamp in the flattened metadata.
+    """
     for idx, metadata in enumerate(flattened_metadata):
         start = math.floor(metadata["timestamps"][0])
         end = math.ceil(metadata["timestamps"][-1])
         if start <= anchor_timestamp < end:
             return idx
-    raise ValueError("Anchor timestamp not found in flattened metadata")
+    raise ValueError(
+        f"Anchor timestamp not found in flattened metadata for video {video_id}"
+    )
 
 
 def precompute_video_embeddings(
@@ -262,15 +269,26 @@ def _process_one_video(payload: Tuple[str, List[Tuple]]):
         resolved_index = ego4d_unique_captions[caption]
         anchor_caption = ego4d_embeddings[resolved_index]
 
-        anchor_idx = resolve_anchor_index(anchor_timestamp, flattened_metadata)
+        try:
+            anchor_idx = resolve_anchor_index(
+                video_id, anchor_timestamp, flattened_metadata
+            )
 
-        new_start, new_end = expand_window(
-            precomputed_embeddings,
-            flattened_metadata,
-            anchor_caption,
-            anchor_idx,
-            args["tau"],
-        )
+            new_start, new_end = expand_window(
+                precomputed_embeddings,
+                flattened_metadata,
+                anchor_caption,
+                anchor_idx,
+                args["tau"],
+            )
+        except ValueError as e:
+            print(f"Error resolving anchor index for video {video_id}: {e}")
+
+            print(f"Flattened metadata: {flattened_metadata}")
+            print(f"start: {start}, end: {end}")
+            print(f"anchor_timestamp: {anchor_timestamp}")
+            new_start = start
+            new_end = end
 
         local_results[original_idx] = (video_id, new_start, new_end, original_caption)
 

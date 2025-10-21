@@ -25,11 +25,12 @@ export PYTHONPATH=.:third_party/decord/python/
 
 python3 -m second_party.postprocess.main \
     --dataset /ptmp/dduka/databases/ego4d/ego4d_train.pkl \
-    --ego4d-embeddings-path /ptmp/dduka/databases/ego4d/embeddings/PE-Core-bigG-14-448_meta/embeddings.sqlite \
-    --lavila-embeddings-path /ptmp/dduka/databases/ego4d/video_320px_15sec/lavila_captions_num_frames_4/temperature_0.7/embeddings/PE-Core-bigG-14-448_meta/embeddings.sqlite \
+    --ego4d-embeddings-path /ptmp/dduka/databases/ego4d/embeddings/PE-Core-bigG-14-448_meta/ \
+    --lavila-embeddings-path /ptmp/dduka/databases/ego4d/video_320px_15sec/lavila_captions_num_frames_4/temperature_0.7/embeddings/PE-Core-bigG-14-448_meta/ \
     --chunk-metadata-root /ptmp/dduka/databases/ego4d/video_320px_15sec/lavila_captions_num_frames_4/temperature_0.7 \
     --embedding-model PE-Core-bigG-14-448_meta \
     --temperature 0.7 \
     --tau 0.95 \
     --embeddings-to-include 10 \
     --output-path /ptmp/dduka/databases/ego4d/similarity_based_shift_timestamps/ \
+    --num-workers 70 \
