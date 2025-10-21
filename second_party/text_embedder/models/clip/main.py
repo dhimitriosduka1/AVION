@@ -3,11 +3,11 @@ import wandb
 import torch
 import argparse
 import open_clip
-
+import numpy as np
+import json
 from tqdm import tqdm
 
 from second_party.text_embedder.data.datasets import VideoMetadataDataset
-from second_party.storage.sqlite import SQLiteClient
 
 
 def get_args_parser():
@@ -78,40 +78,37 @@ def main(args):
     )
     os.makedirs(output_dir, exist_ok=True)
 
-    output_path = os.path.join(output_dir, f"embeddings.sqlite")
+    shape = (len(video_metadata_dataset), dim)
+    print(f"Shape of the memmap: {shape}")
+    print(f"Estimated memory usage: {shape[0] * shape[1] * 4 / 1024 / 1024:.2f} MB")
 
-    with SQLiteClient(output_path) as client:
-        print(f"Inserting metadata")
-        client.insert_metadata(
-            {
-                "model_name": args.model_name,
-                "pretrained": args.pretrained,
-                "video_metadata_path": args.video_metadata_path,
-                "batch_size": args.batch_size,
-                "num_workers": args.num_workers,
-            }.items()
+    memmap = np.memmap(
+        os.path.join(output_dir, f"embeddings.memmap"),
+        shape=shape,
+        mode="w+",
+        dtype=np.float32,
+    )
+
+    captions = {}
+    for batch_idx, batch in enumerate(tqdm(dataloader, desc="Encoding text")):
+        original_caption, caption, _ = (
+            batch["original_caption"],
+            batch["caption"],
+            batch["frequency"],
         )
-        print(f"Metadata inserted")
 
-        results = []
-        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Encoding text")):
-            original_caption, caption, frequency = (
-                batch["original_caption"],
-                batch["caption"],
-                batch["frequency"],
-            )
+        caption = caption.to(device)
 
-            caption = caption.to(device)
+        text_features = encode_text(model, caption).detach().float().cpu().numpy()
 
-            text_features = encode_text(model, caption).detach().float().cpu()
+        for i in range(len(original_caption)):
+            global_index = batch_idx * args.batch_size + i
+            memmap[global_index] = text_features[i]
 
-            for i in range(len(original_caption)):
-                results.append((original_caption[i], text_features[i], int(frequency[i])))
+            captions[original_caption[i]] = global_index
 
-            if batch_idx % args.flush_frequency == 0 and batch_idx > 0:
-                print(f"Inserting {len(results)} embeddings")
-                client.insert_embeddings(results)
-                results = []
+        if batch_idx % args.flush_frequency == 0 and batch_idx > 0:
+            memmap.flush()
 
             wandb.log(
                 {
@@ -119,12 +116,10 @@ def main(args):
                 }
             )
 
-        if len(results) > 0:
-            print(f"Inserting the last {len(results)} embeddings")
-            client.insert_embeddings(results)
+    memmap.flush()
 
-        print(f"Number of embeddings to be stored: {len(video_metadata_dataset)}")
-        print(f"Number of stored embeddings: {client.count_embeddings()}")
+    with open(os.path.join(output_dir, f"captions.json"), "w") as f:
+        json.dump(captions, f)
 
     print(f"Done")
 
