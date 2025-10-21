@@ -121,6 +121,9 @@ def main(args):
     with open(os.path.join(output_dir, f"captions.json"), "w") as f:
         json.dump(captions, f)
 
+    with open(os.path.join(output_dir, f"shape.json"), "w") as f:
+        json.dump({"shape": list(shape)}, f)
+
     print(f"Done")
 
 

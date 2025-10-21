@@ -11,7 +11,6 @@ from pathlib import Path
 from matplotlib import pyplot as plt
 from typing import List, Dict, Any, Tuple
 from collections import defaultdict
-from second_party.storage.sqlite import SQLiteClient
 from second_party.preprocess.utils import preprocess_captions
 
 
@@ -98,7 +97,8 @@ def resolve_anchor_index(anchor_timestamp: float, flattened_metadata: Any) -> in
 def precompute_video_embeddings(
     flattened_metadata: List[Dict[str, Any]],
     embeddings_to_include: int,
-    lavila_embeddings_client: SQLiteClient,
+    lavila_embeddings: np.ndarray,
+    lavila_unique_captions: Dict[str, int],
     seed: str,
 ) -> np.ndarray:
     """
@@ -115,8 +115,9 @@ def precompute_video_embeddings(
         embeddings = []
         for caption in chosen:
             processed = preprocess_captions([caption])[0]
-            embedding = lavila_embeddings_client.get_embedding(processed)
-            embeddings.append(np.asarray(embedding, dtype=np.float32))
+            resolved_index = lavila_unique_captions[processed]
+            embedding = lavila_embeddings[resolved_index]
+            embeddings.append(embedding)
 
         mean_embedding = np.mean(np.stack(embeddings, axis=0), axis=0)
         normalized = mean_embedding / np.linalg.norm(mean_embedding)
@@ -173,12 +174,6 @@ def group_samples_by_video(
 
 def main(args):
     assert args.dataset.endswith(".pkl"), "Dataset must be a pickle file"
-    assert args.ego4d_embeddings_path.endswith(
-        ".sqlite"
-    ), "Ego4d embeddings must be a sqlite file"
-    assert args.lavila_embeddings_path.endswith(
-        ".sqlite"
-    ), "LaViLa embeddings must be a sqlite file"
 
     # Reproducibility
     random.seed(args.seed)
@@ -197,12 +192,37 @@ def main(args):
     print(f"Loaded {len(data)} samples")
 
     print(f"Opening {args.ego4d_embeddings_path} embeddings")
-    ego4d_embeddings = SQLiteClient(args.ego4d_embeddings_path)
-    print(f"Loaded {ego4d_embeddings.count_embeddings()} ego4d embeddings")
+    ego4d_embeddings_shape = json.load(
+        open(os.path.join(args.ego4d_embeddings_path, "shape.json"), "r")
+    )
+    ego4d_embeddings = np.memmap(
+        os.path.join(args.ego4d_embeddings_path, "embeddings.memmap"),
+        mode="r",
+        dtype=np.float32,
+        shape=tuple(ego4d_embeddings_shape["shape"]),
+    )
+    print(f"Loaded {ego4d_embeddings.shape[0]} ego4d embeddings")
+    ego4d_unique_captions = json.load(
+        open(os.path.join(args.ego4d_embeddings_path, "captions.json"), "r")
+    )
+
+    print(f"Loaded {len(ego4d_unique_captions)} ego4d unique captions")
 
     print(f"Opening {args.lavila_embeddings_path} embeddings")
-    lavila_embeddings = SQLiteClient(args.lavila_embeddings_path)
-    print(f"Loaded {lavila_embeddings.count_embeddings()} lavila embeddings")
+    lavila_embeddings_shape = json.load(
+        open(os.path.join(args.lavila_embeddings_path, "shape.json"), "r")
+    )
+    lavila_embeddings = np.memmap(
+        os.path.join(args.lavila_embeddings_path, "embeddings.memmap"),
+        mode="r",
+        dtype=np.float32,
+        shape=tuple(lavila_embeddings_shape["shape"]),
+    )
+    print(f"Loaded {lavila_embeddings.shape[0]} lavila embeddings")
+    lavila_unique_captions = json.load(
+        open(os.path.join(args.lavila_embeddings_path, "captions.json"), "r")
+    )
+    print(f"Loaded {len(lavila_unique_captions)} lavila unique captions")
 
     # Group samples by video
     video_groups = group_samples_by_video(data)
@@ -230,10 +250,11 @@ def main(args):
 
         # Precompute all embeddings for this video once
         precomputed_embeddings = precompute_video_embeddings(
-            flattened_metadata,
-            args.embeddings_to_include,
-            lavila_embeddings,
-            video_id,
+            flattened_metadata=flattened_metadata,
+            embeddings_to_include=args.embeddings_to_include,
+            lavila_embeddings=lavila_embeddings,
+            lavila_unique_captions=lavila_unique_captions,
+            seed=video_id,
         )
 
         # Process all samples for this video
@@ -241,8 +262,9 @@ def main(args):
             anchor_timestamp = 0.5 * (start + end)
             caption = preprocess_captions([original_caption])[0]
 
-            # The anchor caption against which the similarities are computed
-            anchor_caption = ego4d_embeddings.get_embedding(caption)
+            # Resolve the anchor caption index
+            resolved_index = ego4d_unique_captions[caption]
+            anchor_caption = ego4d_embeddings[resolved_index]
 
             anchor_idx = resolve_anchor_index(anchor_timestamp, flattened_metadata)
 
