@@ -34,7 +34,7 @@ echo "GPUs per node: $SLURM_GPUS_ON_NODE"
 
 cd /u/dduka/work/projects/Thesis/AVION
 
-RUN_NAME=DUAL_ENCODER_PRETRAIN_BASELINE_256_RANDOM_SHIFT_WINDOWS-1.5-2.5-1.0
+RUN_NAME=DUAL_ENCODER_PRETRAIN_BASELINE_256_RANDOM_SHIFT_WIND-1.5-2.5-1.0
 EXP_PATH=/ptmp/dduka/work/training_metadata/avion/$RUN_NAME
 
 mkdir -p $EXP_PATH
