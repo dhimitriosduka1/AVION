@@ -48,7 +48,7 @@ srun --cpu_bind=v --accel-bind=gn torchrun \
     --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
     --rdzv_backend=c10d \
     scripts/main_lavila_pretrain.py \
-    --train-metadata /ptmp/dduka/databases/ego4d/similarity_based_shift_timestamps/sentence-transformers-all-MiniLM-L6-v2/ego4d_train_temperature_0.7_threshold_0.90_embeddings_10.pkl \
+    --train-metadata /ptmp/dduka/databases/ego4d/similarity_based_shift_timestamps/sentence-transformers-all-MiniLM-L6-v2/ego4d_train_temperature_0.7_threshold_0.9_embeddings_10.pkl \
     --use-flash-attn \
     --grad-checkpointing \
     --use-fast-conv1 \
