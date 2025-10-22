@@ -562,8 +562,7 @@ def main(args):
     if args.evaluate:
         val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
         if dist_utils.is_main_process():
-            with open(os.path.join(args.output_dir, "eval_log.txt"), "a") as f:
-                f.write(json.dumps(val_stats) + "\n")
+            wandb.log(data={f"test_{k}": v for k, v in val_stats.items()}, step=0)
         return
 
     if args.fix_lr:
@@ -589,10 +588,10 @@ def main(args):
     print("=> beginning training")
     best_acc1 = 0.0
     for epoch in range(args.start_epoch, args.epochs):
-        
+
         if args.distributed and args.enable_train_loader_shuffle:
             train_loader.sampler.set_epoch(epoch)
-        
+
         # train for one epoch
         train_stats = train(
             train_loader,
