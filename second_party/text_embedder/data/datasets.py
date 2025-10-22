@@ -43,12 +43,8 @@ class VideoMetadataDataset(Dataset):
 
         print(f"Number of total captions: {self.number_of_total_captions}")
         print(f"Number of unique captions: {self.number_of_unique_captions}")
-        print(
-            f"Percentage of unique captions: {self.percentage_of_unique_captions}")
+        print(f"Percentage of unique captions: {self.percentage_of_unique_captions}")
         print(f"Preprocess function: {self.preprocess_function}")
-
-    def set_custom_tokenizer_function(self, tokenizer_function):
-        self.custom_tokenizer_function = tokenizer_function
 
     def __len__(self):
         return len(self.unique_captions)
@@ -58,17 +54,17 @@ class VideoMetadataDataset(Dataset):
 
         original_caption = metadata["text"]
 
-        if self.custom_tokenizer_function is not None:
-            caption = self.custom_tokenizer_function(original_caption)
-        else:
+        if self.tokenizer:
             # Tokenize as a single example and remove the leading batch dim so
             # DataLoader batching produces shape [batch, context_length]
             caption = self.tokenizer([original_caption])[0]
+        else:
+            caption = original_caption
 
         frequency = metadata["frequency"]
 
         return {
             "original_caption": original_caption,
             "caption": caption,
-            "frequency": torch.tensor(frequency)
+            "frequency": torch.tensor(frequency),
         }

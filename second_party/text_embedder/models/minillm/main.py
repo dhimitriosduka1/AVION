@@ -62,6 +62,23 @@ def load_model_and_tokenizer(model_name, device):
     return model, tokenizer, dim
 
 
+def make_collate_fn(tokenizer):
+    def collate(samples):
+        original_caps = [s["original_caption"] for s in samples]
+        texts = [s["caption"] for s in samples]
+        freqs = [s.get("frequency", 1) for s in samples]
+
+        batch_enc = tokenizer(texts, padding=True, truncation=True, return_tensors="pt")
+
+        return {
+            "original_caption": original_caps,
+            "caption": batch_enc,
+            "frequency": torch.as_tensor(freqs),
+        }
+
+    return collate
+
+
 @torch.no_grad()
 @torch.autocast("cuda")
 def encode_text(model, encoded_input):
@@ -88,9 +105,6 @@ def main(args):
     print(f"Loaded model and tokenizer")
 
     video_metadata_dataset = VideoMetadataDataset(args.video_metadata_path, None)
-    video_metadata_dataset.set_custom_tokenizer_function(
-        lambda x: tokenizer(x, padding=True, truncation=True, return_tensors="pt")
-    )
     print(f"Created video metadata dataset")
 
     # Create the dataloader
@@ -100,6 +114,7 @@ def main(args):
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
+        collate_fn=make_collate_fn(tokenizer),
     )
     print(f"Created dataloader")
 
@@ -128,8 +143,6 @@ def main(args):
         caption = caption.to(device)
 
         text_features = encode_text(model, caption)
-        print(f"Text features shape: {text_features.shape}")
-
         text_features = text_features.detach().float().cpu().numpy()
 
         for i in range(len(original_caption)):
