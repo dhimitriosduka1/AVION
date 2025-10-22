@@ -15,5 +15,5 @@ for tau in "${taus[@]}"; do
     -o "${log_stem}_%A_%a_%x_%j_%N.out" \
     -e "${log_stem}_%A_%a_%x_%j_%N.err" \
     --export=ALL,TAU="${tau}" \
-    /u/dduka/work/projects/Thesis/AVION/submit/raven/postprocess/sim_based/minilm/script.sbatch
+    /u/dduka/work/projects/Thesis/AVION/submit/raven/postprocess/sim_based/minilm/fixed/script.sbatch
 done

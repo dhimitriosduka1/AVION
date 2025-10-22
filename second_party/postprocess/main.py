@@ -141,11 +141,25 @@ def expand_window(
     anchor_embedding: np.ndarray,
     anchor_idx: int,
     tau: float,
+    mode: str = "fixed",
 ) -> Tuple[float, float]:
     """
     Expand from anchor_idx left and right while similarity >= tau.
     Uses precomputed embeddings array.
     """
+
+    if mode == "fixed":
+        pass
+    elif mode == "percentile":
+        # When in "percentile" mode, tau represents the drop in similarity from the reference similarity which determines when to stop expanding
+        assert 0 < tau < 1, "tau must be between 0 and 1"
+        reference_similarity = cosine_sim(
+            anchor_embedding, precomputed_embeddings[anchor_idx]
+        )
+        tau = reference_similarity * (1.0 - tau)
+    else:
+        raise ValueError(f"Invalid mode: {mode}")
+
     # Expand left
     left = anchor_idx
     while left - 1 >= 0:
@@ -280,6 +294,7 @@ def _process_one_video(payload: Tuple[str, List[Tuple]]):
                 anchor_caption,
                 anchor_idx,
                 args["tau"],
+                args["mode"],
             )
         except ValueError as e:
             print(f"Error resolving anchor index for video {video_id}: {e}")
@@ -314,7 +329,7 @@ def main(args):
 
     wandb.init(
         project="Thesis",
-        name=f"Threshold {args.tau} - Embeddings Number {args.embeddings_to_include} - Temperature {args.temperature}",
+        name=f"Threshold {args.tau} - Embeddings Number {args.embeddings_to_include} - Temperature {args.temperature} - Mode {args.mode}",
         config={**args.__dict__},
         group=f"Similarity Based Timestamp Shifting - {args.embedding_model}",
     )
@@ -365,6 +380,7 @@ def main(args):
         "chunk_metadata_root": args.chunk_metadata_root,
         "embeddings_to_include": args.embeddings_to_include,
         "tau": args.tau,
+        "mode": args.mode,
     }
 
     items = list(video_groups.items())
@@ -414,7 +430,7 @@ def main(args):
     output_file = (
         Path(args.output_path)
         / args.embedding_model
-        / f"ego4d_train_temperature_{args.temperature}_threshold_{args.tau}_embeddings_{args.embeddings_to_include}.pkl"
+        / f"ego4d_train_temperature_{args.temperature}_threshold_{args.tau}_embeddings_{args.embeddings_to_include}_mode_{args.mode}.pkl"
     )
     with open(output_file, "wb") as f:
         pickle.dump(results, f)
@@ -533,6 +549,12 @@ if __name__ == "__main__":
         type=int,
         default=min(8, os.cpu_count() or 1),
         help="Number of parallel worker processes for per-video processing",
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="fixed",
+        help="Mode to use for expanding the window",
     )
     args = parser.parse_args()
     main(args)
