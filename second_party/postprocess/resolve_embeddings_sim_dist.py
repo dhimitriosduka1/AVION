@@ -89,13 +89,20 @@ def plot_cosine_density_from_memmap(
     else:
         raise ValueError("method must be 'subset' or 'pairs'")
 
+    mean = float(np.mean(sims))
+    std = float(np.std(sims))
+
     hist, edges = np.histogram(sims, bins=bins, range=(-1.0, 1.0), density=True)
     centers = 0.5 * (edges[:-1] + edges[1:])
     hist_smooth = _smooth_density(hist, smooth_sigma_bins)
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(centers, hist, label="Density (hist)")
-    ax.plot(centers, hist_smooth, label=f"Smoothed bins)")
+    ax.plot(centers, hist, label="Density")
+    ax.plot(centers, hist_smooth, label=f"Smoothed")
+
+    ax.axvline(mean, linestyle="--", linewidth=1.5, label=f"(mean = {mean:.4f})")
+    ax.axvspan(mean - std, mean + std, alpha=0.15, label=f"(std = {std:.4f})")
+
     ax.set_xlabel("Cosine Similarity")
     ax.set_ylabel("Density")
     ax.set_title("Cosine Similarity Density")
