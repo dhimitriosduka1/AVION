@@ -30,8 +30,6 @@ class VideoMetadataDataset(Dataset):
         self.metadata_path = metadata_path
         self.tokenizer = tokenizer
 
-        assert tokenizer is not None, "Tokenizer is required"
-
         with open(self.metadata_path, "r") as f:
             self.metadata = json.load(f)
 
@@ -49,6 +47,9 @@ class VideoMetadataDataset(Dataset):
             f"Percentage of unique captions: {self.percentage_of_unique_captions}")
         print(f"Preprocess function: {self.preprocess_function}")
 
+    def set_custom_tokenizer_function(self, tokenizer_function):
+        self.custom_tokenizer_function = tokenizer_function
+
     def __len__(self):
         return len(self.unique_captions)
 
@@ -57,9 +58,12 @@ class VideoMetadataDataset(Dataset):
 
         original_caption = metadata["text"]
 
-        # Tokenize as a single example and remove the leading batch dim so
-        # DataLoader batching produces shape [batch, context_length]
-        caption = self.tokenizer([original_caption])[0]
+        if self.custom_tokenizer_function is not None:
+            caption = self.custom_tokenizer_function(original_caption)
+        else:
+            # Tokenize as a single example and remove the leading batch dim so
+            # DataLoader batching produces shape [batch, context_length]
+            caption = self.tokenizer([original_caption])[0]
 
         frequency = metadata["frequency"]
 
