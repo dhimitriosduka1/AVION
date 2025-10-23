@@ -211,7 +211,7 @@ def main(args):
     with open(
         os.path.join(
             Path(args.output_path) / "random_shift_timestamps",
-            f"ego4d_train_random_shift_{args.scale_min}_{args.scale_max}_{args.min_duration}_{args.max_duration}.pkl",
+            f"ego4d_train_random_shift_{args.scale_min}_{args.scale_max}_{args.min_duration}_{args.max_duration}_{args.seed}.pkl",
         ),
         "wb",
     ) as f:
