@@ -16,13 +16,18 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from second_party.preprocess.utils import preprocess_captions
 
 
-def plot_segment_len_dist(segment_lengths: List[float], title: str):
+def plot_distribution(
+    values: List[float],
+    title: str,
+    xlabel: str = "Length (seconds)",
+    ylabel: str = "Frequency",
+):
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    plt.hist(segment_lengths, bins=100)
+    plt.hist(values, bins=100)
     ax.set_title(title)
-    ax.set_xlabel("Length (seconds)")
-    ax.set_ylabel("Frequency")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
     ax.set_yscale("log")
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -147,7 +152,7 @@ def expand_window(
     Expand from anchor_idx left and right while similarity >= tau.
     Uses precomputed embeddings array.
     """
-
+    segment_embeddings = []
     if mode == "fixed":
         pass
     elif mode == "percentile":
@@ -167,7 +172,7 @@ def expand_window(
         if cosine_sim(anchor_embedding, embedding) < tau:
             break
         left -= 1
-
+        segment_embeddings.append(embedding)
     # Expand right
     right = anchor_idx
     while right + 1 < len(flattened_metadata):
@@ -175,9 +180,22 @@ def expand_window(
         if cosine_sim(anchor_embedding, embedding) < tau:
             break
         right += 1
+        segment_embeddings.append(embedding)
 
-    return math.floor(flattened_metadata[left]["timestamps"][0]), math.ceil(
-        flattened_metadata[right]["timestamps"][-1]
+    segment_embeddings = np.stack(segment_embeddings, axis=0)
+    similarity_between_segments = np.dot(segment_embeddings, segment_embeddings.T)
+
+    # Only use the non-diagonal elements of the similarity matrix
+    similarity_between_segments = similarity_between_segments[
+        ~np.eye(len(similarity_between_segments), dtype=bool)
+    ]
+
+    mean_similarity_between_segments = np.mean(similarity_between_segments, axis=0)
+
+    return (
+        math.floor(flattened_metadata[left]["timestamps"][0]),
+        math.ceil(flattened_metadata[right]["timestamps"][-1]),
+        mean_similarity_between_segments,
     )
 
 
@@ -273,6 +291,7 @@ def _process_one_video(payload: Tuple[str, List[Tuple]]):
         "new_timestamps_duration": [],
         "iou": [],
         "expansion_ratio": [],
+        "mean_similarity_between_segments": [],
     }
 
     for original_idx, start, end, original_caption in samples:
@@ -288,7 +307,7 @@ def _process_one_video(payload: Tuple[str, List[Tuple]]):
                 video_id, anchor_timestamp, flattened_metadata
             )
 
-            new_start, new_end = expand_window(
+            new_start, new_end, mean_similarity_between_segments = expand_window(
                 precomputed_embeddings,
                 flattened_metadata,
                 anchor_caption,
@@ -304,6 +323,7 @@ def _process_one_video(payload: Tuple[str, List[Tuple]]):
             print(f"anchor_timestamp: {anchor_timestamp}")
             new_start = start
             new_end = end
+            mean_similarity_between_segments = None
 
         local_results[original_idx] = (video_id, new_start, new_end, original_caption)
 
@@ -313,6 +333,11 @@ def _process_one_video(payload: Tuple[str, List[Tuple]]):
         s = compute_intersection_stats(start, end, new_start, new_end)
         local_stats["iou"].append(s["iou"])
         local_stats["expansion_ratio"].append(s["expansion_ratio"])
+
+        if mean_similarity_between_segments is not None:
+            local_stats["mean_similarity_between_segments"].append(
+                mean_similarity_between_segments
+            )
 
     return local_results, local_stats
 
@@ -371,6 +396,7 @@ def main(args):
         "new_timestamps_duration": [],
         "iou": [],
         "expansion_ratio": [],
+        "mean_similarity_between_segments": [],
     }
 
     # Prepare args for worker initializer (only simple types!)
@@ -437,14 +463,21 @@ def main(args):
 
     print(f"Saved {len(results)} results to {output_file}")
 
-    original_distribution = plot_segment_len_dist(
-        segment_lengths=stats_dict["old_timestamps_duration"],
+    original_distribution = plot_distribution(
+        values=stats_dict["old_timestamps_duration"],
         title="Segment Lengths Histogram (Original)",
     )
 
-    shifted_timestamps_distribution = plot_segment_len_dist(
-        segment_lengths=stats_dict["new_timestamps_duration"],
+    shifted_timestamps_distribution = plot_distribution(
+        values=stats_dict["new_timestamps_duration"],
         title="Segment Lengths Histogram (Shifted Timestamps)",
+    )
+
+    mean_similarity_between_segments_distribution = plot_distribution(
+        values=stats_dict["mean_similarity_between_segments"],
+        title="Mean Similarity Between Segments Histogram",
+        xlabel="Mean Similarity Between Segments",
+        ylabel="Value",
     )
 
     table = wandb.Table(
@@ -484,6 +517,9 @@ def main(args):
             "table": table,
             "original_timestamp_dist": wandb.Image(original_distribution),
             "shifted_timestamp_dist": wandb.Image(shifted_timestamps_distribution),
+            "mean_similarity_between_segments_dist": wandb.Image(
+                mean_similarity_between_segments_distribution
+            ),
         }
     )
 
