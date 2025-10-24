@@ -25,7 +25,7 @@ export PYTHONPATH=/u/dduka/work/projects/Thesis/AVION:$PYTHONPATH
 
 python3 -m second_party.postprocess.resolve_embeddings_sim_dist \
     --source-run-name "sentence-transformers/all-MiniLM-L6-v2/temperature_0.7" \
-    --embeddings-path /ptmp/dduka/databases/ego4d/video_320px_15sec/lavila_captions_num_frames_4/temperature_0.7/embeddings/sentence-transformers/all-MiniLM-L6-v2/ \
+    --embeddings-path /ptmp/dduka/databases/ego4d/video_320px_15sec/lavila_captions_num_frames_4/temperature_0.7/embeddings/sentence-transformers/all-MiniLM-L6-v2/preprocess_captions \
     --method "subset" \
     --n-pairs 1000000 \
     --bins 200 \

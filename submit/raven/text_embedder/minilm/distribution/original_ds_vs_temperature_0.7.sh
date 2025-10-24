@@ -26,7 +26,7 @@ export PYTHONPATH=/u/dduka/work/projects/Thesis/AVION:$PYTHONPATH
 python3 -m second_party.postprocess.resolve_source_vs_target_sim_dist \
     --source-run-name "sentence-transformers/all-MiniLM-L6-v2_ego4d" \
     --target-run-name "sentence-transformers/all-MiniLM-L6-v2_temperature_0.7" \
-    --embeddings-path /ptmp/dduka/databases/ego4d/embeddings/sentence-transformers/all-MiniLM-L6-v2 \
+    --embeddings-path /ptmp/dduka/databases/ego4d/embeddings/sentence-transformers/all-MiniLM-L6-v2/preprocess_captions \
     --target-embeddings-path /ptmp/dduka/databases/ego4d/video_320px_15sec/lavila_captions_num_frames_4/temperature_0.7/embeddings/sentence-transformers/all-MiniLM-L6-v2/ \
     --method "subset" \
     --n-pairs 4000000 \
