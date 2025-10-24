@@ -19,6 +19,9 @@ def get_args_parser():
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=1)
     parser.add_argument("--flush-frequency", type=int, default=200)
+    parser.add_argument(
+        "--preprocess-function", type=str, default="preprocess_captions"
+    )
     return parser
 
 
@@ -46,7 +49,7 @@ def encode_text(model, text, normalize=True):
 def main(args):
     wandb.init(
         project="Thesis",
-        name=f"{args.model_name}_{args.pretrained}_{args.video_metadata_path.split('/')[-2]}",
+        name=f"{args.model_name}_{args.pretrained}_{args.video_metadata_path.split('/')[-2]}_{args.preprocess_function}",
         config={**args.__dict__},
     )
 
@@ -74,7 +77,9 @@ def main(args):
     print(f"Created dataloader")
 
     output_dir = os.path.join(
-        os.path.dirname(args.output_path), f"{args.model_name}_{args.pretrained}"
+        os.path.dirname(args.output_path),
+        f"{args.model_name}_{args.pretrained}",
+        f"{args.preprocess_function}",
     )
     os.makedirs(output_dir, exist_ok=True)
 

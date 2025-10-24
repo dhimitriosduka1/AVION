@@ -5,10 +5,19 @@ import inspect
 import pickle
 from tqdm import tqdm
 from collections import Counter
-from second_party.preprocess.utils import preprocess_captions
+from second_party.preprocess.utils import preprocess_captions, preprocess_caption_v2
 
 
 def main(args):
+    if args.preprocess_function == "preprocess_captions":
+        from second_party.preprocess.utils import preprocess_captions
+    elif args.preprocess_function == "preprocess_caption_v2":
+        from second_party.preprocess.utils import (
+            preprocess_caption_v2 as preprocess_captions,
+        )
+    else:
+        raise ValueError(f"Invalid preprocess function: {args.preprocess_function}")
+
     # First, resolve all the captions path
     with open(args.root_path, "rb") as f:
         data = pickle.load(f)
@@ -42,7 +51,7 @@ def main(args):
             }
         )
 
-    with open(os.path.join(args.output_path, "unique_captions.json"), "w") as f:
+    with open(os.path.join(args.output_path, f"unique_captions_{args.preprocess_function}.json"), "w") as f:
         json.dump(results, f)
 
 
@@ -50,5 +59,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--root-path", type=str, required=True)
     parser.add_argument("--output-path", type=str, required=True)
+    parser.add_argument(
+        "--preprocess-function", type=str, default="preprocess_captions"
+    )
     args = parser.parse_args()
     main(args)
