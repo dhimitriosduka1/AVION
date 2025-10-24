@@ -28,6 +28,9 @@ def get_args_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-path", type=str, required=True)
     parser.add_argument("--model-name", type=str, default="ViT-B-32")
+    parser.add_argument(
+        "--preprocess-function", type=str, default="preprocess_captions"
+    )
     parser.add_argument("--video-metadata-path", type=str, required=True)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=1)
@@ -91,7 +94,7 @@ def encode_text(model, encoded_input):
 def main(args):
     wandb.init(
         project="Thesis",
-        name=f"{args.model_name}_{args.video_metadata_path.split('/')[-2]}",
+        name=f"{args.model_name}_{args.video_metadata_path.split('/')[-2]}_{args.preprocess_function}",
         config={**args.__dict__},
         group=f"Text Embeddings",
     )
@@ -118,7 +121,11 @@ def main(args):
     )
     print(f"Created dataloader")
 
-    output_dir = os.path.join(os.path.dirname(args.output_path), f"{args.model_name}")
+    output_dir = os.path.join(
+        os.path.dirname(args.output_path),
+        f"{args.model_name}",
+        f"{args.preprocess_function}",
+    )
     os.makedirs(output_dir, exist_ok=True)
 
     shape = (len(video_metadata_dataset), dim)
