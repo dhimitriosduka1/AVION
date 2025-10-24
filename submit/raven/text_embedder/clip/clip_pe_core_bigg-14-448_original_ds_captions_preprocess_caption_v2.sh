@@ -1,0 +1,34 @@
+#!/bin/bash -l
+
+#SBATCH -o /ptmp/dduka/work/logs/avion/%A_%a_%x_%j_%N.out
+#SBATCH -e /ptmp/dduka/work/logs/avion/%A_%a_%x_%j_%N.err
+
+#SBATCH --job-name clip_embedder_pe_core_bigg-14-448_original_ds_captions
+
+#SBATCH --ntasks-per-node=1
+
+#SBATCH --gres=gpu:1
+#SBATCH --constraint="gpu"
+#SBATCH --mem=120000
+
+#SBATCH --time=03:59:59
+
+module purge
+module load anaconda/3/2023.03
+
+conda activate open_clip
+
+nvidia-smi
+
+cd /u/dduka/work/projects/Thesis/AVION
+export PYTHONPATH=/u/dduka/work/projects/Thesis/AVION:$PYTHONPATH
+
+python3 -m second_party.text_embedder.models.clip.main \
+    --video-metadata-path /ptmp/dduka/databases/ego4d/unique_captions_preprocess_caption_v2.json \
+    --output-path /ptmp/dduka/databases/ego4d/embeddings/ \
+    --preprocess-function preprocess_caption_v2 \
+    --model-name PE-Core-bigG-14-448 \
+    --pretrained meta \
+    --flush-frequency 200 \
+    --batch-size 1024 \
+    --num-workers 8 \
