@@ -1,5 +1,5 @@
 import re
-
+from wordfreq import zipf_frequency
 
 def preprocess_captions(captions):
     def lower(text):
@@ -36,9 +36,6 @@ def preprocess_captions(captions):
 
 
 def preprocess_caption_v2(captions):
-    import re
-    from wordfreq import zipf_frequency
-
     WORD_RE = re.compile(r"[A-Za-z]+(?:['][A-Za-z]+)*")
 
     def first_valid_english_word_with_index(text, *, min_zipf=2.0):
