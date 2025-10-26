@@ -9,11 +9,9 @@ import numpy as np
 from tqdm import tqdm
 from pathlib import Path
 from matplotlib import pyplot as plt
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Callable
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
-
-from second_party.preprocess.utils import preprocess_captions
 
 
 def plot_distribution(
@@ -114,6 +112,7 @@ def precompute_video_embeddings(
     lavila_embeddings: np.ndarray,
     lavila_unique_captions: Dict[str, int],
     seed: str,
+    preprocess_captions: Callable,
 ) -> np.ndarray:
     """
     Precompute all embeddings for a video at once.
@@ -260,7 +259,7 @@ def _init_worker(args_dict: Dict[str, Any]):
     )
 
 
-def _process_one_video(payload: Tuple[str, List[Tuple]]):
+def _process_one_video(payload: Tuple[str, List[Tuple]], preprocess_captions: Callable):
     """
     Worker: process one video's samples.
     payload: (video_id, samples) where samples = [(original_idx, start, end, original_caption), ...]
@@ -280,6 +279,7 @@ def _process_one_video(payload: Tuple[str, List[Tuple]]):
         lavila_embeddings=_WORKER["lavila_embeddings"],
         lavila_unique_captions=_WORKER["lavila_unique_captions"],
         seed=video_id,
+        preprocess_captions=preprocess_captions,
     )
 
     ego4d_embeddings = _WORKER["ego4d_embeddings"]
@@ -347,6 +347,15 @@ def _process_one_video(payload: Tuple[str, List[Tuple]]):
 
 def main(args):
     assert args.dataset.endswith(".pkl"), "Dataset must be a pickle file"
+
+    if args.preprocess_function == "preprocess_captions":
+        from second_party.preprocess.utils import preprocess_captions
+    elif args.preprocess_function == "preprocess_caption_v2":
+        from second_party.preprocess.utils import (
+            preprocess_caption_v2 as preprocess_captions,
+        )
+    else:
+        raise ValueError(f"Invalid preprocess function: {args.preprocess_function}")
 
     # Reproducibility for any rng used in parent
     random.seed(args.seed)
@@ -418,7 +427,7 @@ def main(args):
         for i, item in enumerate(
             tqdm(items, total=total_videos, desc="Processing videos (serial)")
         ):
-            local_results, local_stats = _process_one_video(item)
+            local_results, local_stats = _process_one_video(item, preprocess_captions)
             results_dict.update(local_results)
             for k in stats_dict:
                 stats_dict[k].extend(local_stats[k])
@@ -431,7 +440,10 @@ def main(args):
             initializer=_init_worker,
             initargs=(init_args,),
         ) as ex:
-            futures = [ex.submit(_process_one_video, item) for item in items]
+            futures = [
+                ex.submit(_process_one_video, item, preprocess_captions)
+                for item in items
+            ]
             for i, fut in enumerate(
                 tqdm(
                     as_completed(futures),
@@ -591,6 +603,12 @@ if __name__ == "__main__":
         type=str,
         default="fixed",
         help="Mode to use for expanding the window",
+    )
+    parser.add_argument(
+        "--preprocess-function",
+        type=str,
+        default="preprocess_captions",
+        help="Function to use to preprocess the captions",
     )
     args = parser.parse_args()
     main(args)
