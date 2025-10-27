@@ -363,7 +363,7 @@ def main(args):
 
     wandb.init(
         project="Thesis",
-        name=f"Threshold {args.tau} - Embeddings Number {args.embeddings_to_include} - Temperature {args.temperature} - Mode {args.mode}",
+        name=f"Threshold {args.tau} - Embeddings Number {args.embeddings_to_include} - Temperature {args.temperature} - Mode {args.mode} - Fn {args.preprocess_function}",
         config={**args.__dict__},
         group=f"Similarity Based Timestamp Shifting - {args.embedding_model}",
     )
