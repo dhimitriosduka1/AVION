@@ -67,6 +67,7 @@ def load_model_and_tokenizer(model_name, device):
 
 def make_collate_fn(tokenizer):
     def collate(samples):
+        idxs = [s["idx"] for s in samples]
         original_caps = [s["original_caption"] for s in samples]
         texts = [s["caption"] for s in samples]
         freqs = [s.get("frequency", 1) for s in samples]
@@ -74,6 +75,7 @@ def make_collate_fn(tokenizer):
         batch_enc = tokenizer(texts, padding=True, truncation=True, return_tensors="pt")
 
         return {
+            "idx": idxs,
             "original_caption": original_caps,
             "caption": batch_enc,
             "frequency": torch.as_tensor(freqs),
@@ -141,7 +143,8 @@ def main(args):
 
     captions = {}
     for batch_idx, batch in enumerate(tqdm(dataloader, desc="Encoding text")):
-        original_caption, caption, _ = (
+        idx, original_caption, caption, _ = (
+            batch["idx"],
             batch["original_caption"],
             batch["caption"],
             batch["frequency"],
@@ -153,10 +156,12 @@ def main(args):
         text_features = text_features.detach().float().cpu().numpy()
 
         for i in range(len(original_caption)):
-            global_index = batch_idx * args.batch_size + i
-            memmap[global_index] = text_features[i]
-
-            captions[original_caption[i]] = global_index
+            memmap[idx[i]] = text_features[i]
+        
+            if original_caption[i] in captions:
+                print(f"Warning: Caption {original_caption[i]} already exists")
+            
+            captions[original_caption[i]] = idx[i]
 
         if batch_idx % args.flush_frequency == 0 and batch_idx > 0:
             memmap.flush()

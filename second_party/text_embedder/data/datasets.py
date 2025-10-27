@@ -67,4 +67,5 @@ class VideoMetadataDataset(Dataset):
             "original_caption": original_caption,
             "caption": caption,
             "frequency": torch.tensor(frequency),
+            "idx": idx,
         }
