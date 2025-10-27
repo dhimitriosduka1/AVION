@@ -161,6 +161,50 @@ def expand_window(
             anchor_embedding, precomputed_embeddings[anchor_idx]
         )
         tau = reference_similarity * (1.0 - tau)
+    elif mode == "rp":
+        # Region proposal mode
+        scores = [
+            cosine_sim(anchor_embedding, embedding)
+            for embedding in precomputed_embeddings
+        ]
+
+        durations = [1.0, 1.2, 1.4, 1.6, 1.8, 2.0]
+        centers = [0.0, 0.5, 1.0, 1.5, 2.0]
+
+        all_proposals = []
+        best_score = 0
+        best_window = None
+
+        for c in centers:
+            for d in durations:
+                # Define the window
+                index_start = int(c - d / 2)
+                index_end = int(c + d / 2)
+
+                # Ensure window is within bounds (0 to max_index)
+                index_start = max(0, index_start)
+                index_end = min(len(scores) - 1, index_end)
+
+                window_score = 0
+
+                # Calculate the "Sum of Relevant Scores"
+                for i in range(index_start, index_end + 1):
+                    chunk_score = scores[i]
+                    if chunk_score > tau:
+                        window_score += chunk_score
+
+                # Store this proposal's result
+                all_proposals.append(
+                    {"window": [index_start, index_end], "score": window_score}
+                )
+
+                # Check if it's the new best
+                if window_score > best_score:
+                    best_score = window_score
+                    best_window = [index_start, index_end]
+
+        return best_window[0], best_window[1], best_score
+
     else:
         raise ValueError(f"Invalid mode: {mode}")
 
