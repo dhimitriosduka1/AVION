@@ -94,16 +94,32 @@ def resolve_anchor_index(
     video_id: str, anchor_timestamp: float, flattened_metadata: Any
 ) -> int:
     """
-    Resolve the index of the anchor timestamp in the flattened metadata.
+    Resolve the index of the anchor timestamp by finding the closest
+    segment midpoint in the flattened metadata.
     """
+    if not flattened_metadata:
+        raise ValueError(f"Flattened metadata is empty for video {video_id}")
+
+    closest_idx = -1
+    min_distance = float("inf")
+
     for idx, metadata in enumerate(flattened_metadata):
-        start = math.floor(metadata["timestamps"][0])
-        end = math.ceil(metadata["timestamps"][-1])
-        if start <= anchor_timestamp < end:
-            return idx
-    raise ValueError(
-        f"Anchor timestamp not found in flattened metadata for video {video_id}"
-    )
+        seg_start = metadata["timestamps"][0]
+        seg_end = metadata["timestamps"][-1]
+        seg_midpoint = (seg_start + seg_end) * 0.5
+
+        distance = abs(anchor_timestamp - seg_midpoint)
+
+        if distance < min_distance:
+            min_distance = distance
+            closest_idx = idx
+
+    if closest_idx == -1:
+        raise ValueError(
+            f"Could not resolve anchor index for video {video_id} with anchor timestamp {anchor_timestamp}"
+        )
+
+    return closest_idx
 
 
 def precompute_video_embeddings(
