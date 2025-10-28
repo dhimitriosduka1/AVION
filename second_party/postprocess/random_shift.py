@@ -144,6 +144,11 @@ def index_video_durations(
 def main(args):
     assert args.dataset.endswith(".pkl"), "Dataset must be a pickle file"
 
+    output_path = os.path.join(
+        Path(args.output_path),
+        f"ego4d_train_random_shift_{args.scale_min}_{args.scale_max}_{args.min_duration}_{args.seed}.pkl",
+    )
+
     # Reproducibility
     random.seed(args.seed)
     rng = np.random.default_rng(args.seed)
@@ -208,13 +213,7 @@ def main(args):
         if (i % args.log_every) == 0:
             wandb.log({"progress": (i + 1) / total}, step=i + 1)
 
-    with open(
-        os.path.join(
-            Path(args.output_path) / "random_shift_timestamps",
-            f"ego4d_train_random_shift_{args.scale_min}_{args.scale_max}_{args.min_duration}_{args.seed}.pkl",
-        ),
-        "wb",
-    ) as f:
+    with open(output_path, "wb") as f:
         pickle.dump(result["new_data"], f)
 
     original_distribution = plot_segment_len_dist(

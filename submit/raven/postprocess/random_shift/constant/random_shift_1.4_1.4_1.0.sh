@@ -25,7 +25,7 @@ export PYTHONPATH=.:third_party/decord/python/
 
 python3 -m second_party.postprocess.random_shift \
     --dataset /ptmp/dduka/databases/ego4d/ego4d_train.pkl \
-    --output-path /ptmp/dduka/databases/ego4d \
+    --output-path /ptmp/dduka/databases/ego4d/rewritten_timestamps/random_shift/ \
     --video-root /ptmp/dduka/databases/ego4d/ego4d/v2/full_scale/ \
     --scale-min 1.4 \
     --scale-max 1.4 \
