@@ -48,7 +48,7 @@ srun --cpu_bind=v --accel-bind=gn torchrun \
     --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
     --rdzv_backend=c10d \
     scripts/main_lavila_pretrain.py \
-    --train-metadata /ptmp/dduka/databases/ego4d/random_shift_timestamps/ego4d_train_random_shift_1.2_1.2_1.0_42.pkl \
+    --train-metadata /ptmp/dduka/databases/ego4d/rewritten_timestamps/random_shift/ego4d_train_random_shift_1.3_1.3_1.0_42.pkl \
     --use-flash-attn \
     --grad-checkpointing \
     --use-fast-conv1 \

@@ -34,7 +34,7 @@ echo "GPUs per node: $SLURM_GPUS_ON_NODE"
 
 cd /u/dduka/work/projects/Thesis/AVION
 
-RUN_NAME=DUAL_ENCODER_PRETRAIN_BASELINE_256_RANDOM_SHIFT_WIND-1.2-1.2-1.0
+RUN_NAME=DUAL_ENCODER_PRETRAIN_BASELINE_256_RANDOM_SHIFT_WIND-2.3-2.3-1.0
 EXP_PATH=/ptmp/dduka/work/training_metadata/avion/$RUN_NAME
 
 mkdir -p $EXP_PATH
@@ -48,7 +48,7 @@ srun --cpu_bind=v --accel-bind=gn torchrun \
     --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
     --rdzv_backend=c10d \
     scripts/main_lavila_pretrain.py \
-    --train-metadata /ptmp/dduka/databases/ego4d/random_shift_timestamps/ego4d_train_random_shift_1.2_1.2_1.0_42.pkl \
+    --train-metadata /ptmp/dduka/databases/ego4d/rewritten_timestamps/random_shift/ego4d_train_random_shift_2.3_2.3_1.0_42.pkl \
     --use-flash-attn \
     --grad-checkpointing \
     --use-fast-conv1 \
