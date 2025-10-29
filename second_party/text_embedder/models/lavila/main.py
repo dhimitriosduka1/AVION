@@ -1,150 +1,249 @@
-import os
-import torch
 import argparse
-import numpy as np
-import wandb
 import json
-import urllib.request
-import functools
-import copy
-from collections import OrderedDict
+import os
+import numpy as np
+import torch
+import avion.models.model_clip as model_clip
+import wandb
 
 from tqdm import tqdm
+from functools import partial
+from collections import OrderedDict
+from avion.data.tokenizer import tokenize
+from avion.models.utils import inflate_positional_embeds
 from second_party.text_embedder.data.datasets import VideoMetadataDataset
-from second_party.text_embedder.common.mmap import MemmapUtils
-
-from transformers import GPT2LMHeadModel
-from second_party.lavilla_narrator.lavila.models.tokenizer import MyGPT2Tokenizer
-from second_party.lavilla_narrator.lavila.models.gpt2_gated import (
-    GPT2LMHeadModel as GatedGPT2LMHeadModel,
-)
 
 
 def get_args_parser():
-    parser = argparse.ArgumentParser()
-    # Model
+    parser = argparse.ArgumentParser(description="LAVILA text embedder", add_help=False)
+    parser.add_argument("--output-dir", default="./", type=str, help="output dir")
+    parser.add_argument("--video-chunk-length", default=15, type=int)
+    parser.add_argument("--clip-length", default=16, type=int, help="clip length")
+    parser.add_argument("--clip-stride", default=4, type=int, help="clip stride")
     parser.add_argument(
-        "--checkpoint-root",
-        default="/ptmp/dduka/work/training_metadata/lavilla/checkpoints",
-        type=str,
+        "--norm-style", default="openai", type=str, choices=["openai", "timm"]
     )
     parser.add_argument(
-        "--model-url",
-        default="https://dl.fbaipublicfiles.com/lavila/checkpoints/narrator/{}",
-        type=str,
+        "--fused-decode-crop", action="store_true", dest="fused_decode_crop"
     )
     parser.add_argument(
-        "--model",
-        default="vclm_openai_timesformer_large_336px_gpt2_xl.pt_ego4d.jobid_246897.ep_0003.md5sum_443263.pth",
-        type=str,
+        "--no-fused-decode-crop", action="store_false", dest="fused_decode_crop"
     )
-    parser.add_argument("--gated-xattn", type=bool, default=True)
-    parser.add_argument("--output-path", type=str, required=True)
-    parser.add_argument("--video-metadata-path", type=str, required=True)
-    parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--num-workers", type=int, default=1)
-    parser.add_argument("--flush-frequency", type=int, default=10)
+    parser.set_defaults(fused_decode_crop=False)
+    parser.add_argument("--decode-threads", default=1, type=int)
+    parser.add_argument("--use-multi-epochs-loader", action="store_true")
+    # model
+    parser.add_argument("--model", default="CLIP_VITB16", type=str)
+    parser.add_argument(
+        "--grad-checkpointing", action="store_true", dest="use_grad_checkpointing"
+    )
+    parser.add_argument(
+        "--no-grad-checkpointing", action="store_false", dest="use_grad_checkpointing"
+    )
+    parser.set_defaults(use_grad_checkpointing=False)
+    parser.add_argument("--use-fast-conv1", action="store_true", dest="use_fast_conv1")
+    parser.add_argument(
+        "--disable-fast-conv1", action="store_false", dest="use_fast_conv1"
+    )
+    parser.set_defaults(use_fast_conv1=False)
+    parser.add_argument("--use-flash-attn", action="store_true", dest="use_flash_attn")
+    parser.add_argument(
+        "--disable-flash-attn", action="store_false", dest="use_flash_attn"
+    )
+    parser.set_defaults(use_flash_attn=False)
+    parser.add_argument("--patch-dropout", default=0.0, type=float)
+    parser.add_argument("--drop-path-rate", default=0.0, type=float)
+    parser.add_argument(
+        "--pretrain-model", default="", type=str, help="path of pretrained model"
+    )
+    parser.add_argument("--resume", default="", type=str, help="path to resume from")
+    # clip loss
+    parser.add_argument("--local-loss", action="store_true")
+    parser.add_argument(
+        "--gather-with-grad", action="store_true", dest="gather_with_grad"
+    )
+    parser.add_argument(
+        "--no-gather-with-grad", action="store_false", dest="gather_with_grad"
+    )
+    parser.set_defaults(gather_with_grad=True)
+    # training
+    parser.add_argument(
+        "--use-zero", action="store_true", dest="use_zero", help="use ZeRO optimizer"
+    )
+    parser.add_argument(
+        "--no-use-zero",
+        action="store_false",
+        dest="use_zero",
+        help="use ZeRO optimizer",
+    )
+    parser.set_defaults(use_zero=False)
+    parser.add_argument("--epochs", default=100, type=int)
+    parser.add_argument("--warmup-epochs", default=1, type=int)
+    parser.add_argument("--start-epoch", default=0, type=int)
+    parser.add_argument(
+        "--batch-size",
+        default=16,
+        type=int,
+        help="number of samples per-device/per-gpu",
+    )
+    parser.add_argument("--optimizer", default="adamw", type=str)
+    parser.add_argument("--lr", default=3e-5, type=float)
+    parser.add_argument(
+        "--lr-start", default=1e-6, type=float, help="initial warmup lr"
+    )
+    parser.add_argument("--lr-end", default=1e-5, type=float, help="minimum final lr")
+    parser.add_argument(
+        "--update-freq",
+        default=1,
+        type=int,
+        help="optimizer update frequency (i.e. gradient accumulation steps)",
+    )
+    parser.add_argument("--wd", default=0.01, type=float)
+    parser.add_argument("--betas", default=(0.9, 0.999), nargs=2, type=float)
+    parser.add_argument("--eps", default=1e-8, type=float)
+    parser.add_argument("--eval-freq", default=5, type=int)
+    parser.add_argument(
+        "--disable-amp",
+        action="store_true",
+        help="disable mixed-precision training (requires more memory and compute)",
+    )
+    parser.add_argument("--grad-clip-norm", default=None, type=float)
+    # system
+    parser.add_argument("--print-freq", default=10, type=int, help="print frequency")
+    parser.add_argument(
+        "-j",
+        "--workers",
+        default=8,
+        type=int,
+        metavar="N",
+        help="number of data loading workers per process",
+    )
+    parser.add_argument("--evaluate", action="store_true", help="eval only")
+    parser.add_argument(
+        "--world-size",
+        default=1,
+        type=int,
+        help="number of nodes for distributed training",
+    )
+    parser.add_argument(
+        "--rank", default=0, type=int, help="node rank for distributed training"
+    )
+    parser.add_argument("--local_rank", type=int, default=0)
+    parser.add_argument(
+        "--dist-url",
+        default="env://",
+        type=str,
+        help="url used to set up distributed training",
+    )
+    parser.add_argument("--dist-backend", default="nccl", type=str)
+    parser.add_argument("--seed", default=0, type=int)
+    parser.add_argument("--gpu", default=None, type=int, help="GPU id to use.")
+
+    parser.add_argument("--model-name", default="LAVILA", type=str)
+    parser.add_argument("--preprocess-function", default="preprocess_captions", type=str)
+    parser.add_argument("--video-metadata-path", default="", type=str)
+    parser.add_argument("--batch-size", default=16, type=int)
+    parser.add_argument("--num-workers", default=8, type=int)
+    parser.add_argument("--flush-frequency", default=200, type=int)
+    
     return parser
 
 
-def augment_gpt2_config(config, cross_attn_freq=1, gated_xattn=True):
-    new_config = copy.deepcopy(config)
-    new_config.add_cross_attention = True
-    new_config.add_cross_attention_freq = cross_attn_freq
-    new_config.is_tanh_gating = gated_xattn
-    return new_config
-
-
-def rgetattr(obj, attr, *args):
-    def _getattr(obj, attr):
-        return getattr(obj, attr, *args)
-
-    return functools.reduce(_getattr, [obj] + attr.split("."))
-
-
-def rsetattr(obj, attr, val):
-    pre, _, post = attr.rpartition(".")
-    return setattr(rgetattr(obj, pre) if pre else obj, post, val)
-
-
-def load_model_and_tokenizer(args, device):
-    ckpt_path = os.path.join(args.checkpoint_root, args.model)
-
-    os.makedirs(args.checkpoint_root, exist_ok=True)
-
-    if not os.path.exists(ckpt_path):
-        print("Downloading model to {}".format(ckpt_path))
-        urllib.request.urlretrieve(
-            args.model_url.format(args.model),
-            ckpt_path,
+def load_model(args, device):
+    if args.pretrain_model:
+        ckpt_path = args.pretrain_model
+    else:
+        raise Exception(
+            "no checkpoint found, add it by `--pretrain-model ${CHECKPOINT_PATH}`"
         )
 
     ckpt = torch.load(ckpt_path, map_location="cpu")
-
-    print(f"Checkpoint state_dict keys: {ckpt['state_dict'].keys()}")
-
     state_dict = OrderedDict()
     for k, v in ckpt["state_dict"].items():
         state_dict[k.replace("module.", "")] = v
 
-    text_state_dict = {
-        k.replace("text_decoder.", "", 1): v
-        for k, v in state_dict.items()
-        if k.startswith("text_decoder.")
-    }
+    old_args = ckpt["args"]
+    print("=> creating model: {}".format(old_args.model))
 
-    gpt2 = GPT2LMHeadModel.from_pretrained(
-        "gpt2-xl",
-        use_cache=False,
+    model = getattr(model_clip, old_args.model)(
+        freeze_temperature=True,
+        use_grad_checkpointing=args.use_grad_checkpointing,
+        context_length=old_args.context_length,
+        vocab_size=old_args.vocab_size,
+        patch_dropout=args.patch_dropout,
+        num_frames=args.clip_length,
+        drop_path_rate=args.drop_path_rate,
+        use_fast_conv1=args.use_fast_conv1,
+        use_flash_attn=args.use_flash_attn,
+        use_quick_gelu=True,
+        project_embed_dim=old_args.project_embed_dim,
+        pretrain_zoo=old_args.pretrain_zoo,
+        pretrain_path=old_args.pretrain_path,
     )
 
-    new_config = augment_gpt2_config(
-        gpt2.config, cross_attn_freq=3, gated_xattn=args.gated_xattn
+    model.logit_scale.requires_grad = False
+    print("=> inflating PE in models due to different frame numbers")
+
+    state_dict = inflate_positional_embeds(
+        model.state_dict(),
+        state_dict,
+        num_frames=args.clip_length,
+        load_temporal_fix="bilinear",
     )
-    
-    model = GatedGPT2LMHeadModel(new_config)
 
-    for n, p in gpt2.named_parameters():
-        rsetattr(model, n + ".data", p.data)
-
-    missing, unexpected = model.load_state_dict(text_state_dict, strict=True)
+    model.load_state_dict(state_dict, strict=True)
+    model.to(device)
     print(
-        f"Loaded text weights. Missing={missing[:3]}... Unexpected={unexpected[:3]}..."
+        "=> loaded resume checkpoint '{}' (epoch {})".format(ckpt_path, ckpt["epoch"])
     )
 
-    tokenizer = MyGPT2Tokenizer(args.tokenizer_name, add_bos=True)
+    tokenizer = partial(tokenize, context_length=old_args.context_length)
 
     with torch.no_grad():
-        dim = model.encode_text(tokenizer(["foo"]).to(device)).shape[-1]
+        encoded_input = tokenizer("foo")[0]
+        encoded_input = encoded_input.to(device)
+        text_embeddings = model.textual(encoded_input)
+        dim = text_embeddings.shape[-1]
         print(f"Dimension of the text embeddings: {dim}")
 
     return model, tokenizer, dim
 
 
-@torch.no_grad()
-@torch.autocast("cuda")
-def encode_text(model, text, normalize=True):
-    # The text is already tokenized
-    return model.encode_text(text, normalize=normalize)
-
-
-# NOTE: Only the loading of the model is done!!! Take care of the rest!!!
 def main(args):
-    # wandb.init(
-    #     project="Thesis",
-    #     name=f"{args.model}_{args.video_metadata_path.split('/')[-2]}",
-    #     config={**args.__dict__},
-    # )
+    wandb.init(
+        project="Thesis",
+        name=f"{args.model_name}_{args.video_metadata_path.split('/')[-2]}_{args.preprocess_function}",
+        config={**args.__dict__},
+        group=f"Text Embeddings",
+    )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Load model and tokenizer
-    model, tokenizer, dim = load_model_and_tokenizer(args, device)
+    model, tokenizer, dim = load_model(args, device)
 
-    # Load video metadata dataset
-    print(f"Loaded model and tokenizer")
-    video_metadata_dataset = VideoMetadataDataset(args.video_metadata_path, tokenizer)
+    n_wd, n_non_wd = [], []
+    p_wd, p_non_wd = [], []
+    for n, p in model.named_parameters():
+        if not p.requires_grad:
+            continue  # frozen weights
+        if (
+            p.ndim < 2
+            or "bias" in n
+            or "ln" in n
+            or "bn" in n
+            or "pos_embed" in n
+            or "positional_embedding" in n
+        ):
+            n_non_wd.append(n)
+            p_non_wd.append(p)
+        else:
+            n_wd.append(n)
+            p_wd.append(p)
+
+    torch.backends.cudnn.benchmark = True
+
+    video_metadata_dataset = VideoMetadataDataset(args.video_metadata_path, None)
     print(f"Created video metadata dataset")
 
     # Create the dataloader
@@ -158,29 +257,27 @@ def main(args):
     print(f"Created dataloader")
 
     output_dir = os.path.join(
-        os.path.dirname(args.output_path), f"{args.model_name}_{args.pretrained}"
+        os.path.dirname(args.output_path),
+        f"{args.model_name}",
+        f"{args.preprocess_function}",
     )
     os.makedirs(output_dir, exist_ok=True)
 
-    index_path = os.path.join(output_dir, "index.json")
-
     shape = (len(video_metadata_dataset), dim)
+    print(f"Shape of the memmap: {shape}")
+    print(f"Estimated memory usage: {shape[0] * shape[1] * 4 / 1024 / 1024:.2f} MB")
 
-    mmap_utils = MemmapUtils(
-        output_dir=output_dir,
-        filename="embeddings.memmap",
+    memmap = np.memmap(
+        os.path.join(output_dir, f"embeddings.memmap"),
         shape=shape,
-        dtype=np.float32,
         mode="w+",
-        flush_frequency=args.flush_frequency,
+        dtype=np.float32,
     )
 
-    print(f"Estimated memory usage: {mmap_utils.estimated_megabytes():.2f} MB")
-
-    index_array = {"captions": {}, "metadata": {**args.__dict__}}
-
+    captions = {}
     for batch_idx, batch in enumerate(tqdm(dataloader, desc="Encoding text")):
-        original_caption, caption, _ = (
+        idx, original_caption, caption, _ = (
+            batch["idx"],
             batch["original_caption"],
             batch["caption"],
             batch["frequency"],
@@ -188,27 +285,41 @@ def main(args):
 
         caption = caption.to(device)
 
-        text_features = encode_text(model, caption).detach().float().cpu().numpy()
+        text_features = model.model.encode_text(caption)
+        text_features = text_features.detach().float().cpu().numpy()
 
         for i in range(len(original_caption)):
-            global_index = batch_idx * args.batch_size + i
-            index_array["captions"][original_caption[i]] = global_index
+            memmap[idx[i]] = text_features[i]
 
-            mmap_utils.write_row(global_index, text_features[i])
+            if original_caption[i] in captions:
+                print(f"Warning: Caption {original_caption[i]} already exists")
 
-        wandb.log(
-            {
-                "progress": (batch_idx + 1) / len(dataloader),
-            }
-        )
+            captions[original_caption[i]] = idx[i]
 
-    mmap_utils.flush()
+        if batch_idx % args.flush_frequency == 0 and batch_idx > 0:
+            memmap.flush()
 
-    with open(index_path, "w") as f:
-        json.dump(index_array, f)
+            wandb.log(
+                {
+                    "progress": (batch_idx + 1) / len(dataloader),
+                }
+            )
+
+    memmap.flush()
+
+    with open(os.path.join(output_dir, f"captions.json"), "w") as f:
+        json.dump(captions, f)
+
+    with open(os.path.join(output_dir, f"shape.json"), "w") as f:
+        json.dump({"shape": list(shape)}, f)
+
+    print(f"Done")
 
 
-# Run the script using: python3 -m second_party.text_embedder.models.clip.clip
 if __name__ == "__main__":
-    args = get_args_parser().parse_args()
+    parser = argparse.ArgumentParser(
+        "LAVILA training and evaluation", parents=[get_args_parser()]
+    )
+    args = parser.parse_args()
+    os.makedirs(args.output_dir, exist_ok=True)
     main(args)
