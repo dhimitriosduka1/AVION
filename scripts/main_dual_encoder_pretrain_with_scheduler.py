@@ -216,6 +216,13 @@ def main(args):
     dist_utils.init_distributed_mode(args)
     dist_utils.random_seed(args.seed, dist_utils.get_rank())
 
+    # Make sure the train metadata exist
+    for train_metadata_path in args.train_metadata_paths:
+        if not os.path.exists(train_metadata_path):
+            raise FileNotFoundError(
+                f"Train metadata path {train_metadata_path} does not exist"
+            )
+
     # Initialize wandb
     if dist_utils.is_main_process():
         wandb.init(
