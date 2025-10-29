@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import avion.models.model_clip as model_clip
 import wandb
+import torch.nn.functional as F
 
 from tqdm import tqdm
 from functools import partial
@@ -67,60 +68,70 @@ def get_args_parser():
     parser.set_defaults(use_flash_attn=False)
     parser.add_argument("--patch-dropout", default=0.0, type=float)
     parser.add_argument("--drop-path-rate", default=0.0, type=float)
+    parser.add_argument(
+        "--freeze-temperature", action="store_true", dest="freeze_temperature"
+    )
+    parser.add_argument("--context-length", default=77, type=int)
+    parser.add_argument("--vocab-size", default=49408, type=int)
+
+    parser.add_argument("--project-embed-dim", default=256, type=int)
+    parser.add_argument(
+        "--pretrain-zoo",
+        default="openai",
+        type=str,
+        choices=["openai", "open_clip", "lavila"],
+    )
+    parser.add_argument("--pretrain-path", default=None, type=str)
 
     return parser
 
 
 def load_model(args, device):
-    if args.pretrain_model:
-        ckpt_path = args.pretrain_model
-    else:
-        raise Exception(
-            "no checkpoint found, add it by `--pretrain-model ${CHECKPOINT_PATH}`"
-        )
-
-    ckpt = torch.load(ckpt_path, map_location="cpu")
-    state_dict = OrderedDict()
-    for k, v in ckpt["state_dict"].items():
-        state_dict[k.replace("module.", "")] = v
-
-    old_args = ckpt["args"]
-    print("=> creating model: {}".format(old_args.model))
-
-    model = getattr(model_clip, old_args.model)(
-        freeze_temperature=True,
+    model = getattr(model_clip, args.model)(
+        freeze_temperature=args.freeze_temperature,
         use_grad_checkpointing=args.use_grad_checkpointing,
-        context_length=old_args.context_length,
-        vocab_size=old_args.vocab_size,
+        context_length=args.context_length,
+        vocab_size=args.vocab_size,
         patch_dropout=args.patch_dropout,
         num_frames=args.clip_length,
         drop_path_rate=args.drop_path_rate,
         use_fast_conv1=args.use_fast_conv1,
         use_flash_attn=args.use_flash_attn,
         use_quick_gelu=True,
-        project_embed_dim=old_args.project_embed_dim,
-        pretrain_zoo=old_args.pretrain_zoo,
-        pretrain_path=old_args.pretrain_path,
+        project_embed_dim=args.project_embed_dim,
+        pretrain_zoo=args.pretrain_zoo,
+        pretrain_path=args.pretrain_path,
     )
-
-    model.logit_scale.requires_grad = False
-    print("=> inflating PE in models due to different frame numbers")
-
-    state_dict = inflate_positional_embeds(
-        model.state_dict(),
-        state_dict,
-        num_frames=args.clip_length,
-        load_temporal_fix="bilinear",
-    )
-
-    model.load_state_dict(state_dict, strict=True)
     model.to(device)
-    model.eval()  # Set model to evaluation mode
-    print(
-        "=> loaded resume checkpoint '{}' (epoch {})".format(ckpt_path, ckpt["epoch"])
-    )
 
-    tokenizer = partial(tokenize, context_length=old_args.context_length)
+    if os.path.isfile(args.resume):
+        print("=> loading resume checkpoint '{}'".format(args.resume))
+        checkpoint = torch.load(args.resume, map_location="cpu")
+        if checkpoint["args"].clip_length != args.clip_length:
+            load_temporal_embedding = checkpoint["state_dict"][
+                "module.visual.temporal_embedding"
+            ]
+            load_temporal_embedding = load_temporal_embedding.unsqueeze(0).permute(
+                0, 2, 1
+            )
+            new_temporal_embed = (
+                F.interpolate(
+                    load_temporal_embedding, size=(args.clip_length,), mode="linear"
+                )
+                .permute(0, 2, 1)
+                .squeeze(0)
+            )
+            checkpoint["state_dict"][
+                "module.visual.temporal_embedding"
+            ] = new_temporal_embed
+        epoch = checkpoint["epoch"] if "epoch" in checkpoint else 0
+        result = model.load_state_dict(checkpoint["state_dict"], strict=False)
+        print(result)
+        print("=> loaded resume checkpoint '{}' (epoch {})".format(args.resume, epoch))
+    else:
+        print("=> no checkpoint found at '{}'".format(args.resume))
+
+    tokenizer = partial(tokenize, context_length=args.context_length)
 
     with torch.no_grad():
         encoded_input = tokenizer("foo").to(device)
