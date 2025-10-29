@@ -16,24 +16,38 @@ from second_party.text_embedder.data.datasets import VideoMetadataDataset
 
 def get_args_parser():
     parser = argparse.ArgumentParser(description="LAVILA text embedder", add_help=False)
-    parser.add_argument("--output-dir", default="./", type=str, help="output dir")
-    parser.add_argument("--video-chunk-length", default=15, type=int)
-    parser.add_argument("--clip-length", default=16, type=int, help="clip length")
-    parser.add_argument("--clip-stride", default=4, type=int, help="clip stride")
+    parser.add_argument("--output-path", default="./", type=str, help="output dir")
     parser.add_argument(
-        "--norm-style", default="openai", type=str, choices=["openai", "timm"]
+        "--video-metadata-path", default="", type=str, help="Path to video metadata"
     )
     parser.add_argument(
-        "--fused-decode-crop", action="store_true", dest="fused_decode_crop"
+        "--pretrain-model", default="", type=str, help="path of pretrained model"
+    )
+    parser.add_argument("--model-name", default="LAVILA", type=str)
+    parser.add_argument(
+        "--preprocess-function", default="preprocess_captions", type=str
+    )
+
+    # --- Dataloader Arguments ---
+    parser.add_argument(
+        "--batch-size",
+        default=16,
+        type=int,
+        help="number of samples per-device/per-gpu",
     )
     parser.add_argument(
-        "--no-fused-decode-crop", action="store_false", dest="fused_decode_crop"
+        "-j",
+        "--num-workers",
+        default=8,
+        type=int,
+        metavar="N",
+        help="number of data loading workers per process",
     )
-    parser.set_defaults(fused_decode_crop=False)
-    parser.add_argument("--decode-threads", default=1, type=int)
-    parser.add_argument("--use-multi-epochs-loader", action="store_true")
-    # model
+    parser.add_argument("--flush-frequency", default=200, type=int)
+
+    # --- Model Loading Arguments (Keep for compatibility with ckpt) ---
     parser.add_argument("--model", default="CLIP_VITB16", type=str)
+    parser.add_argument("--clip-length", default=16, type=int, help="clip length")
     parser.add_argument(
         "--grad-checkpointing", action="store_true", dest="use_grad_checkpointing"
     )
@@ -53,99 +67,7 @@ def get_args_parser():
     parser.set_defaults(use_flash_attn=False)
     parser.add_argument("--patch-dropout", default=0.0, type=float)
     parser.add_argument("--drop-path-rate", default=0.0, type=float)
-    parser.add_argument(
-        "--pretrain-model", default="", type=str, help="path of pretrained model"
-    )
-    parser.add_argument("--resume", default="", type=str, help="path to resume from")
-    # clip loss
-    parser.add_argument("--local-loss", action="store_true")
-    parser.add_argument(
-        "--gather-with-grad", action="store_true", dest="gather_with_grad"
-    )
-    parser.add_argument(
-        "--no-gather-with-grad", action="store_false", dest="gather_with_grad"
-    )
-    parser.set_defaults(gather_with_grad=True)
-    # training
-    parser.add_argument(
-        "--use-zero", action="store_true", dest="use_zero", help="use ZeRO optimizer"
-    )
-    parser.add_argument(
-        "--no-use-zero",
-        action="store_false",
-        dest="use_zero",
-        help="use ZeRO optimizer",
-    )
-    parser.set_defaults(use_zero=False)
-    parser.add_argument("--epochs", default=100, type=int)
-    parser.add_argument("--warmup-epochs", default=1, type=int)
-    parser.add_argument("--start-epoch", default=0, type=int)
-    parser.add_argument(
-        "--batch-size",
-        default=16,
-        type=int,
-        help="number of samples per-device/per-gpu",
-    )
-    parser.add_argument("--optimizer", default="adamw", type=str)
-    parser.add_argument("--lr", default=3e-5, type=float)
-    parser.add_argument(
-        "--lr-start", default=1e-6, type=float, help="initial warmup lr"
-    )
-    parser.add_argument("--lr-end", default=1e-5, type=float, help="minimum final lr")
-    parser.add_argument(
-        "--update-freq",
-        default=1,
-        type=int,
-        help="optimizer update frequency (i.e. gradient accumulation steps)",
-    )
-    parser.add_argument("--wd", default=0.01, type=float)
-    parser.add_argument("--betas", default=(0.9, 0.999), nargs=2, type=float)
-    parser.add_argument("--eps", default=1e-8, type=float)
-    parser.add_argument("--eval-freq", default=5, type=int)
-    parser.add_argument(
-        "--disable-amp",
-        action="store_true",
-        help="disable mixed-precision training (requires more memory and compute)",
-    )
-    parser.add_argument("--grad-clip-norm", default=None, type=float)
-    # system
-    parser.add_argument("--print-freq", default=10, type=int, help="print frequency")
-    parser.add_argument(
-        "-j",
-        "--workers",
-        default=8,
-        type=int,
-        metavar="N",
-        help="number of data loading workers per process",
-    )
-    parser.add_argument("--evaluate", action="store_true", help="eval only")
-    parser.add_argument(
-        "--world-size",
-        default=1,
-        type=int,
-        help="number of nodes for distributed training",
-    )
-    parser.add_argument(
-        "--rank", default=0, type=int, help="node rank for distributed training"
-    )
-    parser.add_argument("--local_rank", type=int, default=0)
-    parser.add_argument(
-        "--dist-url",
-        default="env://",
-        type=str,
-        help="url used to set up distributed training",
-    )
-    parser.add_argument("--dist-backend", default="nccl", type=str)
-    parser.add_argument("--seed", default=0, type=int)
-    parser.add_argument("--gpu", default=None, type=int, help="GPU id to use.")
 
-    parser.add_argument("--model-name", default="LAVILA", type=str)
-    parser.add_argument("--preprocess-function", default="preprocess_captions", type=str)
-    parser.add_argument("--video-metadata-path", default="", type=str)
-    parser.add_argument("--batch-size", default=16, type=int)
-    parser.add_argument("--num-workers", default=8, type=int)
-    parser.add_argument("--flush-frequency", default=200, type=int)
-    
     return parser
 
 
@@ -193,6 +115,7 @@ def load_model(args, device):
 
     model.load_state_dict(state_dict, strict=True)
     model.to(device)
+    model.eval()  # Set model to evaluation mode
     print(
         "=> loaded resume checkpoint '{}' (epoch {})".format(ckpt_path, ckpt["epoch"])
     )
@@ -200,8 +123,7 @@ def load_model(args, device):
     tokenizer = partial(tokenize, context_length=old_args.context_length)
 
     with torch.no_grad():
-        encoded_input = tokenizer("foo")[0]
-        encoded_input = encoded_input.to(device)
+        encoded_input = tokenizer("foo").to(device)
         text_embeddings = model.textual(encoded_input)
         dim = text_embeddings.shape[-1]
         print(f"Dimension of the text embeddings: {dim}")
@@ -222,28 +144,9 @@ def main(args):
 
     model, tokenizer, dim = load_model(args, device)
 
-    n_wd, n_non_wd = [], []
-    p_wd, p_non_wd = [], []
-    for n, p in model.named_parameters():
-        if not p.requires_grad:
-            continue  # frozen weights
-        if (
-            p.ndim < 2
-            or "bias" in n
-            or "ln" in n
-            or "bn" in n
-            or "pos_embed" in n
-            or "positional_embedding" in n
-        ):
-            n_non_wd.append(n)
-            p_non_wd.append(p)
-        else:
-            n_wd.append(n)
-            p_wd.append(p)
-
     torch.backends.cudnn.benchmark = True
 
-    video_metadata_dataset = VideoMetadataDataset(args.video_metadata_path, None)
+    video_metadata_dataset = VideoMetadataDataset(args.video_metadata_path, tokenizer)
     print(f"Created video metadata dataset")
 
     # Create the dataloader
@@ -257,7 +160,7 @@ def main(args):
     print(f"Created dataloader")
 
     output_dir = os.path.join(
-        os.path.dirname(args.output_path),
+        args.output_path,
         f"{args.model_name}",
         f"{args.preprocess_function}",
     )
@@ -275,35 +178,40 @@ def main(args):
     )
 
     captions = {}
-    for batch_idx, batch in enumerate(tqdm(dataloader, desc="Encoding text")):
-        idx, original_caption, caption, _ = (
-            batch["idx"],
-            batch["original_caption"],
-            batch["caption"],
-            batch["frequency"],
-        )
 
-        caption = caption.to(device)
-
-        text_features = model.model.encode_text(caption)
-        text_features = text_features.detach().float().cpu().numpy()
-
-        for i in range(len(original_caption)):
-            memmap[idx[i]] = text_features[i]
-
-            if original_caption[i] in captions:
-                print(f"Warning: Caption {original_caption[i]} already exists")
-
-            captions[original_caption[i]] = idx[i]
-
-        if batch_idx % args.flush_frequency == 0 and batch_idx > 0:
-            memmap.flush()
-
-            wandb.log(
-                {
-                    "progress": (batch_idx + 1) / len(dataloader),
-                }
+    # Ensure no gradients are computed
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Encoding text")):
+            idx, original_caption, caption, _ = (
+                batch["idx"],
+                batch["original_caption"],
+                batch["caption"],
+                batch["frequency"],
             )
+
+            caption = caption.to(device)
+
+            text_features = model.textual(caption)
+            text_features = (
+                text_features.float().cpu().numpy()
+            )  # No detach() needed due to torch.no_grad()
+
+            for i in range(len(original_caption)):
+                memmap[idx[i]] = text_features[i]
+
+                if original_caption[i] in captions:
+                    print(f"Warning: Caption {original_caption[i]} already exists")
+
+                captions[original_caption[i]] = idx[i]
+
+            if batch_idx % args.flush_frequency == 0 and batch_idx > 0:
+                memmap.flush()
+
+                wandb.log(
+                    {
+                        "progress": (batch_idx + 1) / len(dataloader),
+                    }
+                )
 
     memmap.flush()
 
@@ -318,8 +226,8 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        "LAVILA training and evaluation", parents=[get_args_parser()]
+        "LAVILA text embedding", parents=[get_args_parser()]
     )
     args = parser.parse_args()
-    os.makedirs(args.output_dir, exist_ok=True)
+    os.makedirs(args.output_path, exist_ok=True)
     main(args)
