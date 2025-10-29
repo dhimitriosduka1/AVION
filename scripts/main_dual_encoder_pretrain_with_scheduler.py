@@ -1,11 +1,8 @@
 import argparse
 from collections import OrderedDict
 from functools import partial
-from itertools import islice
-import json
 import os
 import time
-from typing import Any
 import numpy as np
 import pandas as pd
 
@@ -53,14 +50,11 @@ def get_args_parser():
         help="path to val dataset root",
     )
     parser.add_argument(
-        "--train-metadata", type=str, default=os.environ.get("TRAIN_METADATA")
-    )
-    parser.add_argument(
-        "--train-metadata-aux",
-        default=None,
+        "--train-metadata-paths",
         nargs="+",
         type=str,
-        help="path to metadata file (auxiliary data with pseudo narrations)",
+        required=True,
+        help="List of train metadata paths",
     )
     parser.add_argument(
         "--val-metadata",
@@ -214,42 +208,6 @@ def get_args_parser():
     parser.add_argument("--wandb-project-name", default="Thesis", type=str)
     parser.add_argument("--wandb-run-name", default=None, type=str, required=True)
     parser.add_argument("--wandb-group", type=str, required=False)
-
-    # For performing some testing without training
-    parser.add_argument(
-        "--evaluate-train-dataset",
-        action="store_true",
-        help="If true, will do a full pass over the training dataset for evaluation purposes only",
-    )
-
-    parser.add_argument(
-        "--skip-to-batch",
-        default=0,
-        type=int,
-        help="If > 0, will skip to this batch in the training dataloader",
-    )
-
-    parser.add_argument(
-        "--enable-train-loader-shuffle",
-        action="store_true",
-        help="If true, will enable the train loader shuffle",
-    )
-
-    parser.add_argument(
-        "--training-mode",
-        default="constant",
-        type=str,
-        choices=["constant", "corse-to-fine", "fine-to-corse"],
-        help="Training mode: constant (default), corse-to-fine, fine-to-corse",
-    )
-
-    parser.add_argument(
-        "--training-mode",
-        type=str,
-        required=True,
-        choices=["corse-to-fine", "fine-to-corse"],
-        help="Training mode: corse-to-fine, fine-to-corse",
-    )
 
     return parser
 
@@ -459,47 +417,28 @@ def main(args):
     val_transform = torchvision.transforms.Compose(base_val_transform_ls)
     val_transform_gpu = torch.nn.Sequential(*gpu_val_transform_ls)
 
-    train_dataset = VideoCaptionDatasetCLIP(
-        args.dataset,
-        args.root,
-        args.train_metadata,
-        transform=train_transform,
-        is_training=True,
-        tokenizer=tokenizer,
-        clip_length=args.clip_length,
-        clip_stride=args.clip_stride,
-        chunk_len=args.video_chunk_length,
-        threads=args.decode_threads,
-        fast_rrc=args.fused_decode_crop,
-        rrc_params=(crop_size, (0.5, 1.0)),
-    )
+    assert (
+        len(args.train_metadata_paths) == args.epochs
+    ), "Number of train metadata paths must be equal to the number of epochs"
+    train_dataset_list = []
 
-    if args.train_metadata_aux is not None:
-        aux_dataset_list = []
-        for aux_i, aux_pkl in enumerate(args.train_metadata_aux):
-            aux_dataset = VideoCaptionDatasetCLIP(
-                args.dataset,
-                args.root,
-                aux_pkl,
-                transform=train_transform,
-                is_training=True,
-                tokenizer=tokenizer,
-                clip_length=args.clip_length,
-                clip_stride=args.clip_stride,
-                chunk_len=args.video_chunk_length,
-                fast_rrc=args.fused_decode_crop,
-                rrc_params=(crop_size, (0.5, 1.0)),
-            )
-            aux_dataset_list.append(aux_dataset)
-            print(
-                "auxiliary dataset [{}] : source = {}, len(aux_dataset) = {}".format(
-                    aux_i, aux_pkl, len(aux_dataset)
-                )
-            )
-        pseudo_label_dataset = torch.utils.data.ConcatDataset(aux_dataset_list)
-        train_dataset = torch.utils.data.ConcatDataset(
-            [train_dataset, pseudo_label_dataset]
+    for train_metadata_path in args.train_metadata_paths:
+        train_dataset = VideoCaptionDatasetCLIP(
+            args.dataset,
+            args.root,
+            train_metadata_path,
+            transform=train_transform,
+            is_training=True,
+            tokenizer=tokenizer,
+            clip_length=args.clip_length,
+            clip_stride=args.clip_stride,
+            chunk_len=args.video_chunk_length,
+            threads=args.decode_threads,
+            fast_rrc=args.fused_decode_crop,
+            rrc_params=(crop_size, (0.5, 1.0)),
         )
+
+        train_dataset_list.append(train_dataset)
 
     val_dataset = VideoCaptionDatasetCLIP(
         "ek100_mir",
@@ -515,53 +454,31 @@ def main(args):
         rcc_params=(crop_size,),
     )
 
-    if args.distributed:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-        val_sampler = torch.utils.data.distributed.DistributedSampler(
-            val_dataset, shuffle=False
+    train_loader_list = []
+    for dataset in train_dataset_list:
+        if args.distributed:
+            train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+        else:
+            train_sampler = None
+
+        train_loader = torch.utils.data.DataLoader(
+            dataset,
+            batch_size=args.batch_size,
+            shuffle=(train_sampler is None),
+            collate_fn=None,
+            num_workers=args.workers,
+            pin_memory=False,
+            sampler=train_sampler,
+            drop_last=True,
         )
-    else:
-        train_sampler = None
-        val_sampler = None
 
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=(train_sampler is None),
-        collate_fn=None,
-        num_workers=args.workers,
-        pin_memory=False,
-        sampler=train_sampler,
-        drop_last=True,
+        train_loader_list.append(train_loader)
+
+    val_sampler = (
+        torch.utils.data.distributed.DistributedSampler(val_dataset, shuffle=False)
+        if args.distributed
+        else None
     )
-
-    print("len(train_loader) = {}".format(len(train_loader)))
-
-    if args.evaluate_train_dataset:
-        # Start evaluation at batch index args.start_batch (default 0)
-        start_batch = args.skip_to_batch
-
-        dataset = train_loader.dataset
-        sampler = train_loader.sampler
-        bs = train_loader.batch_size
-
-        # reconstruct the sample order from the sampler
-        indices = list(sampler)
-
-        # skip to the right place
-        start = start_batch * bs
-        total_batches = len(indices) // bs
-
-        # iterate from the chosen batch onwards
-        for _it, i in enumerate(range(start, len(indices), bs), start=start_batch):
-            batch_indices = indices[i : i + bs]
-            batch_samples = [dataset[j] for j in batch_indices]
-            train_loader.collate_fn(batch_samples)
-
-            if _it % 100 == 0:
-                print(f"===> Processed batch {_it} of {total_batches}")
-
-        return
 
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
@@ -572,8 +489,6 @@ def main(args):
         sampler=val_sampler,
         drop_last=False,
     )
-
-    print("len(val_loader) = {}".format(len(val_loader)))
 
     if args.evaluate:
         val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
@@ -588,7 +503,7 @@ def main(args):
             args.lr,
             args.lr_end,
             args.epochs,
-            len(train_loader) // args.update_freq,
+            len(train_loader_list[0]) // args.update_freq,
             warmup_epochs=args.warmup_epochs,
             start_warmup_value=args.lr_start,
         )
@@ -605,8 +520,7 @@ def main(args):
     best_acc1 = 0.0
     for epoch in range(args.start_epoch, args.epochs):
 
-        if args.distributed and args.enable_train_loader_shuffle:
-            train_loader.sampler.set_epoch(epoch)
+        train_loader = train_loader_list[epoch]
 
         # train for one epoch
         train_stats = train(
