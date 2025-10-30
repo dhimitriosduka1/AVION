@@ -20,6 +20,7 @@ from avion.data.clip_dataset import VideoCaptionDatasetCLIP
 from avion.data.tokenizer import tokenize
 from avion.data.transforms import Permute
 
+from csv import reader
 from avion.losses.losses import ClipLoss
 import avion.models.model_clip as model_clip
 from avion.optim.schedulers import cosine_scheduler
@@ -27,6 +28,9 @@ import avion.utils.distributed as dist_utils
 from avion.utils.evaluation_ek100mir import get_mAP, get_nDCG
 from avion.utils.meters import AverageMeter, ProgressMeter
 from avion.utils.misc import check_loss_nan
+from second_party.evaluation.charades.dataset import CharadesEgo
+from second_party.evaluation.charades.transforms import init_video_transform_dict
+from second_party.evaluation.charades.utils import sim_matrix, charades_map, map
 
 # Additional imports
 from dotenv import load_dotenv
@@ -233,6 +237,19 @@ def get_args_parser():
         "--enable-train-loader-shuffle",
         action="store_true",
         help="If true, will enable the train loader shuffle",
+    )
+
+    # For Charades evaluation
+    parser.add_argument(
+        "--charades-data-dir",
+        type=str,
+        default=os.environ.get("CHARADES_DATA_DIR"),
+    )
+
+    parser.add_argument(
+        "--charades-meta-dir",
+        type=str,
+        default=os.environ.get("CHARADES_META_DIR"),
     )
 
     return parser
@@ -499,14 +516,26 @@ def main(args):
         rcc_params=(crop_size,),
     )
 
+    charades_val_kwargs = dict(
+        dataset_name="CharadesEgo",
+        text_params={"input": "text"},
+        video_params={"input_res": crop_size, "num_frames": 4, "loading": "lax"},
+        data_dir=args.charades_data_dir,
+        meta_dir=args.charades_meta_dir,
+        tsfms=init_video_transform_dict()["test"],
+        reader="cv2_charades",
+        split="val",
+    )
+    charades_val_dataset = CharadesEgo(**charades_val_kwargs)
+
+    # after you build val_loader, add/replace this block
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
         val_sampler = torch.utils.data.distributed.DistributedSampler(
             val_dataset, shuffle=False
         )
     else:
-        train_sampler = None
-        val_sampler = None
+        train_sampler = val_sampler = None
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -557,12 +586,37 @@ def main(args):
         drop_last=False,
     )
 
+    if dist_utils.is_main_process():
+        charades_val_loader = torch.utils.data.DataLoader(
+            charades_val_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.workers,
+            pin_memory=False,
+            sampler=None,
+            drop_last=False,
+        )
+    else:
+        charades_val_loader = None
+
     print("len(val_loader) = {}".format(len(val_loader)))
+    print("len(charades_val_loader) = {}".format(len(charades_val_loader)))
 
     if args.evaluate:
-        val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
+
         if dist_utils.is_main_process():
-            wandb.log(data={f"test_{k}": v for k, v in val_stats.items()}, step=0)
+            charades_val_stats = validate_charades_ego(
+                charades_val_loader, model, tokenizer, args
+            )
+            wandb.log(
+                {f"test_charades_{k}": v for k, v in charades_val_stats.items()}, step=0
+            )
+
+        # val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
+
+        # if dist_utils.is_main_process():
+        #     wandb.log(data={f"test_{k}": v for k, v in val_stats.items()}, step=0)
+
         return
 
     if args.fix_lr:
@@ -607,6 +661,15 @@ def main(args):
 
         if (epoch + 1) % args.eval_freq != 0:
             continue
+
+        if dist_utils.is_main_process():
+            charades_val_stats = validate_charades_ego(
+                charades_val_loader, model, tokenizer, args
+            )
+            wandb.log(
+                {f"test_charades_{k}": v for k, v in charades_val_stats.items()},
+                step=wandb.run.step,
+            )
 
         val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
         acc1 = val_stats["avg_map"]
@@ -922,6 +985,63 @@ def validate_mir(val_loader, transform_gpu, model, criterion, args):
         "txt_ndcg": txt_nDCG,
         "avg_ndcg": avg_nDCG,
     }
+
+
+def validate_charades_ego(val_loader, model, tokenizer, args):
+    # switch to eval mode
+    device = model.device
+    model = dist_utils.get_model(model)
+    model.eval()
+
+    cls_arr = []
+    with open(
+        os.path.join(args.charades_meta_dir, "Charades_v1_classes.txt"), "r"
+    ) as charades:
+        csv_reader = list(reader(charades))
+
+    for line in csv_reader:
+        cls_arr.append(line[0][5:])
+
+    vid_embed_arr = []
+    gt_arr = []
+
+    with amp.autocast(enabled=not args.disable_amp):
+        with torch.no_grad():
+            data_classes = tokenizer(cls_arr).cuda()
+            data_classes_embed = model.encode_text(data_classes)
+            data_classes_embed = F.normalize(data_classes_embed, dim=-1).cpu().detach()
+
+            for i, item in enumerate(val_loader):
+                video = item["video"].to(device)
+                print(f"Shape of video: {video.shape}")
+                video = video.permute(
+                    0, 2, 1, 3, 4
+                )  # (B, T, C, H, W) -> (B, C, T, H, W)
+
+                if isinstance(item["video"], list):
+                    item["video"] = [x.to(device) for x in item["video"]]
+                else:
+                    item["video"] = item["video"].to(device)
+
+                image_features = model.encode_image(video)
+                image_features = F.normalize(image_features, dim=-1)
+                vid_embed_arr.append(image_features.cpu().detach())
+
+                gt_arr.append(item["target"].cpu().detach())
+
+            vid_embeds = torch.cat(vid_embed_arr)
+            gt_embeds = torch.cat(gt_arr)
+
+            sims = sim_matrix(data_classes_embed, vid_embeds)
+
+            sims = sims.numpy().T
+            gt_embeds = gt_embeds.numpy()
+            m_ap, w_ap, m_aps = charades_map(np.vstack(sims), np.vstack(gt_embeds))
+
+            return {
+                "mAP": m_ap,
+                "wAP": w_ap,
+            }
 
 
 if __name__ == "__main__":

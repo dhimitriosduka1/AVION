@@ -47,6 +47,7 @@ def get_args_parser():
     parser.add_argument("--flush-frequency", default=200, type=int)
 
     # --- Model Loading Arguments (Keep for compatibility with ckpt) ---
+    parser.add_argument("--resume", default="", type=str, help="path to resume from")
     parser.add_argument("--model", default="CLIP_VITB16", type=str)
     parser.add_argument("--clip-length", default=16, type=int, help="clip length")
     parser.add_argument(
@@ -135,7 +136,9 @@ def load_model(args, device):
 
     with torch.no_grad():
         encoded_input = tokenizer("foo").to(device)
-        text_embeddings = model.textual(encoded_input)
+        text_embeddings = model.encode_text(
+            encoded_input, cast_dtype=torch.float32
+        )
         dim = text_embeddings.shape[-1]
         print(f"Dimension of the text embeddings: {dim}")
 
@@ -202,10 +205,9 @@ def main(args):
 
             caption = caption.to(device)
 
-            text_features = model.textual(caption)
-            text_features = (
-                text_features.float().cpu().numpy()
-            )  # No detach() needed due to torch.no_grad()
+            text_features = model.encode_text(caption, cast_dtype=torch.float32)
+            text_features = F.normalize(text_features, dim=-1)
+            text_features = text_features.float().cpu().numpy()
 
             for i in range(len(original_caption)):
                 memmap[idx[i]] = text_features[i]
@@ -213,7 +215,7 @@ def main(args):
                 if original_caption[i] in captions:
                     print(f"Warning: Caption {original_caption[i]} already exists")
 
-                captions[original_caption[i]] = idx[i]
+                captions[original_caption[i]] = idx[i].item()
 
             if batch_idx % args.flush_frequency == 0 and batch_idx > 0:
                 memmap.flush()

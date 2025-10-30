@@ -129,6 +129,7 @@ def precompute_video_embeddings(
     lavila_unique_captions: Dict[str, int],
     seed: str,
     preprocess_captions: Callable,
+    aggregation_mode: str = "mean",
 ) -> np.ndarray:
     """
     Precompute all embeddings for a video at once.
@@ -148,9 +149,20 @@ def precompute_video_embeddings(
             embedding = lavila_embeddings[resolved_index]
             embeddings.append(embedding)
 
-        mean_embedding = np.mean(np.stack(embeddings, axis=0), axis=0)
-        normalized = mean_embedding / np.linalg.norm(mean_embedding)
-        all_embeddings.append(normalized)
+        # Stack valid embeddings
+        embeddings_stack = np.stack(embeddings, axis=0)
+
+        # Perform aggregation
+        if aggregation_mode == "mean":
+            aggregated_embedding = np.mean(embeddings_stack, axis=0)
+        elif aggregation_mode == "max_pooling":
+            aggregated_embedding = np.max(embeddings_stack, axis=0)
+        else:
+            raise ValueError(f"Invalid aggregation mode: {aggregation_mode}")
+
+        all_embeddings.append(
+            aggregated_embedding / np.linalg.norm(aggregated_embedding)
+        )
 
     return np.stack(all_embeddings, axis=0)
 
@@ -340,6 +352,7 @@ def _process_one_video(payload: Tuple[str, List[Tuple]], preprocess_captions: Ca
         lavila_unique_captions=_WORKER["lavila_unique_captions"],
         seed=video_id,
         preprocess_captions=preprocess_captions,
+        aggregation_mode=args["aggregation_mode"],
     )
 
     ego4d_embeddings = _WORKER["ego4d_embeddings"]
@@ -423,7 +436,7 @@ def main(args):
 
     wandb.init(
         project="Thesis",
-        name=f"Threshold {args.tau} - Embeddings Number {args.embeddings_to_include} - Temperature {args.temperature} - Mode {args.mode} - Fn {args.preprocess_function}",
+        name=f"Threshold {args.tau} - Embeddings Number {args.embeddings_to_include} - Temperature {args.temperature} - Mode {args.mode} - Fn {args.preprocess_function} - Aggregation {args.aggregation_mode}",
         config={**args.__dict__},
         group=f"Similarity Based Timestamp Shifting - {args.embedding_model}",
     )
@@ -476,6 +489,7 @@ def main(args):
         "embeddings_to_include": args.embeddings_to_include,
         "tau": args.tau,
         "mode": args.mode,
+        "aggregation_mode": args.aggregation_mode,
     }
 
     items = list(video_groups.items())
@@ -528,7 +542,7 @@ def main(args):
     output_file = (
         Path(args.output_path)
         / args.embedding_model
-        / f"ego4d_train_temperature_{args.temperature}_threshold_{args.tau}_embeddings_{args.embeddings_to_include}_mode_{args.mode}.pkl"
+        / f"ego4d_train_temperature_{args.temperature}_threshold_{args.tau}_embeddings_{args.embeddings_to_include}_mode_{args.mode}_aggregation_{args.aggregation_mode}.pkl"
     )
     with open(output_file, "wb") as f:
         pickle.dump(results, f)
@@ -669,6 +683,13 @@ if __name__ == "__main__":
         type=str,
         default="preprocess_captions",
         help="Function to use to preprocess the captions",
+    )
+    parser.add_argument(
+        "--aggregation-mode",
+        type=str,
+        default="mean",
+        choices=["mean", "max_pooling"],
+        help="Aggregation mode to use for the embeddings",
     )
     args = parser.parse_args()
     main(args)
