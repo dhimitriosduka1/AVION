@@ -1,16 +1,13 @@
 import torch
 import numpy as np
-import torch.amp as amp
+import torch.cuda.amp as amp
 import avion.utils.distributed as dist_utils
 
 
 def validate_zeroshot(
-    val_loader, templates, labels, model, tokenizer, use_half=False, disable_amp=False
+    val_loader, templates, labels, model, tokenizer, disable_amp=False
 ):
     model.eval()
-
-    if use_half:
-        model = model.half()
 
     all_outputs = []
     all_targets = []
@@ -47,9 +44,6 @@ def validate_zeroshot(
                 if isinstance(images, torch.Tensor):
                     images = images.cuda(non_blocking=True)
 
-                    if use_half:
-                        images = images.half()
-
                     target = target.cuda(non_blocking=True)
 
                     image_features = dist_utils.get_model(model).encode_image(images)
@@ -66,8 +60,6 @@ def validate_zeroshot(
                     logits_all_clips = []
                     for images in images_list:
                         images = images.cuda(non_blocking=True)
-                        if use_half:
-                            images = images.half()
 
                         image_features = dist_utils.get_model(model).encode_image(
                             images

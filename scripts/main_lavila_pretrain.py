@@ -30,7 +30,17 @@ from avion.utils.meters import AverageMeter, ProgressMeter
 from avion.utils.misc import check_loss_nan
 from second_party.evaluation.charades.dataset import CharadesEgo
 from second_party.evaluation.charades.transforms import init_video_transform_dict
-from second_party.evaluation.charades.utils import sim_matrix, charades_map, map
+from second_party.evaluation.charades.utils import sim_matrix, charades_map
+
+# from second_party.evaluation.egomcq.dataset import VideoCaptionDatasetMCQ
+from second_party.evaluation.dataset import get_downstream_dataset
+from second_party.evaluation.transforms import get_val_transform
+from second_party.evaluation.label_map import generate_label_map
+from second_party.evaluation.utils import validate_zeroshot
+
+# from sklearn.metrics import confusion_matrix
+# from second_party.evaluation.utils import get_mean_accuracy
+# from second_party.evaluation.utils import validate_mcq
 
 # Additional imports
 from dotenv import load_dotenv
@@ -251,6 +261,30 @@ def get_args_parser():
         type=str,
         default=os.environ.get("CHARADES_META_DIR"),
     )
+
+    # parser.add_argument(
+    #     "--egomcq-data-dir",
+    #     type=str,
+    #     default=os.environ.get("EGO4D_MCQ_DATA_DIR"),
+    # )
+
+    # parser.add_argument(
+    #     "--egomcq-meta-dir",
+    #     type=str,
+    #     default=os.environ.get("EGO4D_MCQ_META_DIR"),
+    # )
+
+    # parser.add_argument(
+    #     "--egtea-data-dir",
+    #     type=str,
+    #     default=os.environ.get("EGTEA_DATA_DIR"),
+    # )
+
+    # parser.add_argument(
+    #     "--egtea-meta-dir",
+    #     type=str,
+    #     default=os.environ.get("EGTEA_META_DIR"),
+    # )
 
     return parser
 
@@ -516,17 +550,90 @@ def main(args):
         rcc_params=(crop_size,),
     )
 
-    charades_val_kwargs = dict(
-        dataset_name="CharadesEgo",
-        text_params={"input": "text"},
-        video_params={"input_res": crop_size, "num_frames": 4, "loading": "lax"},
-        data_dir=args.charades_data_dir,
-        meta_dir=args.charades_meta_dir,
-        tsfms=init_video_transform_dict()["test"],
-        reader="cv2_charades",
-        split="val",
+    # python eval_zeroshot.py 
+    #   --dataset charades_ego 
+    #   --metadata-val datasets/CharadesEgo/CharadesEgo/CharadesEgo_v1_test_only1st.csv 
+    #   --root datasets/CharadesEgo/CharadesEgo_v1_480/ 
+    #   --clip-length 4 
+    #   --clip-stride 16 
+    #   --sparse-sample 
+    #   --resume $PATH
+    charades_kwargs = dict(
+        dataset="charades_ego",
+        root=args.charades_data_dir,
+        metadata_val=f"{args.charades_meta_dir}/CharadesEgo_v1_test_only1st.csv",
+        num_clips=1,
+        clip_length=4,
+        clip_stride=16,
+        sparse_sample=True,
+        num_crops=1,
     )
-    charades_val_dataset = CharadesEgo(**charades_val_kwargs)
+
+    charades_ego_labels, charades_ego_mapping_vn2act = generate_label_map(
+        root=args.charades_meta_dir, dataset=charades_kwargs["dataset"]
+    )
+
+    charades_ego_val_dataset = get_downstream_dataset(
+        get_val_transform(
+            args.model,
+            charades_kwargs["num_crops"],
+            crop_size,
+            charades_kwargs["clip_length"],
+            charades_kwargs["num_clips"],
+        ),
+        charades_kwargs,
+        subset="val",
+        label_mapping=charades_ego_mapping_vn2act,
+    )
+
+    # python eval_zeroshot.py --dataset ego4d_mcq --metadata-val datasets/Ego4D/egomcq.json --root datasets/Ego4D/video_5min_chunks_288px/ --clip-length 4 --resume $PATH --use-half -j 4
+    # egomcq_kwargs = dict(
+    #     dataset="egomcq",
+    #     root=args.egomcq_data_dir,
+    #     metadata_val=args.egomcq_meta_dir,
+    #     num_clips=1,
+    #     clip_length=4,
+    #     clip_stride=1,
+    #     sparse_sample=False,
+    #     num_crops=1,
+    # )
+    # egomcq_val_dataset = get_downstream_dataset(
+    #     get_val_transform(
+    #         args.model,
+    #         egomcq_kwargs.num_crops,
+    #         crop_size,
+    #         egomcq_kwargs.clip_length,
+    #         egomcq_kwargs.num_clips,
+    #     ),
+    #     tokenizer,
+    #     egomcq_kwargs,
+    #     subset="val",
+    #     label_mapping=None,
+    # )
+
+    # python eval_zeroshot.py --dataset egtea --metadata-val datasets/EGTEA/test_split1.txt --root datasets/EGTEA/cropped_clips/ --clip-length 16 --clip-stride 2 --num-crops 3 --num-clips 10 --resume $PATH
+    # egtea_kwargs = dict(
+    #     dataset="egtea",
+    #     root=args.egtea_data_dir,
+    #     metadata_val=args.egtea_meta_dir,
+    #     num_clips=10,
+    #     clip_length=16,
+    #     clip_stride=2,
+    #     num_crops=3,
+    # )
+    # egtea_val_dataset = get_downstream_dataset(
+    #     get_val_transform(
+    #         args.model,
+    #         egtea_kwargs.num_crops,
+    #         crop_size,
+    #         egtea_kwargs.clip_length,
+    #         egtea_kwargs.num_clips,
+    #     ),
+    #     tokenizer,
+    #     egtea_kwargs,
+    #     subset="val",
+    #     label_mapping=None,
+    # )
 
     # after you build val_loader, add/replace this block
     if args.distributed:
@@ -587,30 +694,89 @@ def main(args):
     )
 
     if dist_utils.is_main_process():
-        charades_val_loader = torch.utils.data.DataLoader(
-            charades_val_dataset,
+        charades_ego_val_loader = torch.utils.data.DataLoader(
+            charades_ego_val_dataset,
             batch_size=args.batch_size,
             shuffle=False,
             num_workers=args.workers,
-            pin_memory=False,
-            sampler=None,
+            pin_memory=True,
             drop_last=False,
         )
+
+        # egomcq_val_loader = torch.utils.data.DataLoader(
+        #     egomcq_val_dataset,
+        #     batch_size=args.batch_size,
+        #     shuffle=False,
+        #     num_workers=args.workers,
+        #     pin_memory=True,
+        #     drop_last=False,
+        # )
+
+        # egtea_val_loader = torch.utils.data.DataLoader(
+        #     egtea_val_dataset,
+        #     batch_size=args.batch_size,
+        #     shuffle=False,
+        #     num_workers=args.workers,
+        #     pin_memory=True,
+        #     drop_last=False,
+        # )
+        print("len(charades_ego_val_loader) = {}".format(len(charades_ego_val_loader)))
+        # print("len(egomcq_val_loader) = {}".format(len(egomcq_val_loader)))
+        # print("len(egtea_val_loader) = {}".format(len(egtea_val_loader)))
     else:
-        charades_val_loader = None
+        charades_ego_val_loader = None
+        # egomcq_val_loader = None
+        # egtea_val_loader = None
 
     print("len(val_loader) = {}".format(len(val_loader)))
-    print("len(charades_val_loader) = {}".format(len(charades_val_loader)))
 
     if args.evaluate:
-
         if dist_utils.is_main_process():
-            charades_val_stats = validate_charades_ego(
-                charades_val_loader, model, tokenizer, args
+            charades_ego_preds, charades_ego_targets = validate_zeroshot(
+                charades_ego_val_loader,
+                ["{}"],
+                charades_ego_labels,
+                model,
+                tokenizer,
             )
-            wandb.log(
-                {f"test_charades_{k}": v for k, v in charades_val_stats.items()}, step=0
+
+            charades_ego_mAP, _, _ = charades_map(
+                charades_ego_preds.numpy(), charades_ego_targets.numpy()
             )
+
+            print("Charades Ego mAP: {:.3f}".format(charades_ego_mAP))
+
+            # egtea_preds, egtea_targets = validate_zeroshot(
+            #     egtea_val_loader, ["{}"], None, model, tokenizer
+            # )
+
+            # egtea_preds, egtea_targets = egtea_preds.numpy(), egtea_targets.numpy()
+            # cm = confusion_matrix(egtea_targets, egtea_preds.argmax(axis=1))
+            # egtea_mean_class_acc, egtea_top1_acc = get_mean_accuracy(cm)
+
+            # print(
+            #     "EGTEA Mean Acc: {:.3f}, Top-1 Acc: {:.3f}".format(
+            #         egtea_mean_class_acc, egtea_top1_acc
+            #     )
+            # )
+
+            # egomcq_metrics = validate_mcq(egomcq_val_loader, model, use_half=True)
+
+            # print(egomcq_metrics)
+
+            # charades_val_stats = validate_charades_ego(
+            #     charades_val_loader, model, tokenizer, args
+            # )
+            # wandb.log(
+            #     {f"test_charades_{k}": v for k, v in charades_val_stats.items()}, step=0
+            # )
+
+            # egomcq_val_stats = validate_egomcq(
+            #     egomcq_val_loader, model, tokenizer, args
+            # )
+            # wandb.log(
+            #     {f"test_egomcq_{k}": v for k, v in egomcq_val_stats.items()}, step=0
+            # )
 
         # val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
 
@@ -985,63 +1151,6 @@ def validate_mir(val_loader, transform_gpu, model, criterion, args):
         "txt_ndcg": txt_nDCG,
         "avg_ndcg": avg_nDCG,
     }
-
-
-def validate_charades_ego(val_loader, model, tokenizer, args):
-    # switch to eval mode
-    device = model.device
-    model = dist_utils.get_model(model)
-    model.eval()
-
-    cls_arr = []
-    with open(
-        os.path.join(args.charades_meta_dir, "Charades_v1_classes.txt"), "r"
-    ) as charades:
-        csv_reader = list(reader(charades))
-
-    for line in csv_reader:
-        cls_arr.append(line[0][5:])
-
-    vid_embed_arr = []
-    gt_arr = []
-
-    with amp.autocast(enabled=not args.disable_amp):
-        with torch.no_grad():
-            data_classes = tokenizer(cls_arr).cuda()
-            data_classes_embed = model.encode_text(data_classes)
-            data_classes_embed = F.normalize(data_classes_embed, dim=-1).cpu().detach()
-
-            for i, item in enumerate(val_loader):
-                video = item["video"].to(device)
-                print(f"Shape of video: {video.shape}")
-                video = video.permute(
-                    0, 2, 1, 3, 4
-                )  # (B, T, C, H, W) -> (B, C, T, H, W)
-
-                if isinstance(item["video"], list):
-                    item["video"] = [x.to(device) for x in item["video"]]
-                else:
-                    item["video"] = item["video"].to(device)
-
-                image_features = model.encode_image(video)
-                image_features = F.normalize(image_features, dim=-1)
-                vid_embed_arr.append(image_features.cpu().detach())
-
-                gt_arr.append(item["target"].cpu().detach())
-
-            vid_embeds = torch.cat(vid_embed_arr)
-            gt_embeds = torch.cat(gt_arr)
-
-            sims = sim_matrix(data_classes_embed, vid_embeds)
-
-            sims = sims.numpy().T
-            gt_embeds = gt_embeds.numpy()
-            m_ap, w_ap, m_aps = charades_map(np.vstack(sims), np.vstack(gt_embeds))
-
-            return {
-                "mAP": m_ap,
-                "wAP": w_ap,
-            }
 
 
 if __name__ == "__main__":
