@@ -13,6 +13,18 @@ def datetime2sec(str):
     return int(hh) * 3600 + int(mm) * 60 + float(ss)
 
 
+def _batch_to_numpy(batch):
+    """Convert a batch returned by decord.VideoReader.get_batch to numpy.
+
+    Handles different decord bridges: MXNet/NDArray via asnumpy(), or PyTorch via .cpu().numpy().
+    """
+    if hasattr(batch, "asnumpy"):
+        return batch.asnumpy()
+    if isinstance(batch, torch.Tensor):
+        return batch.cpu().numpy()
+    return np.asarray(batch)
+
+
 def video_loader(
     root,
     vid,
@@ -63,17 +75,17 @@ def video_loader(
     # load frames
     if max(frame_ids) < len(vr):
         try:
-            frames = vr.get_batch(frame_ids).asnumpy()
+            frames = _batch_to_numpy(vr.get_batch(frame_ids))
         except decord.DECORDError as error:
             print(error)
-            frames = vr.get_batch([0] * len(frame_ids)).asnumpy()
+            frames = _batch_to_numpy(vr.get_batch([0] * len(frame_ids)))
     else:
         # find the remaining frames in the next chunk
         try:
             frame_ids_part1 = list(
                 filter(lambda frame_id: frame_id < len(vr), frame_ids)
             )
-            frames_part1 = vr.get_batch(frame_ids_part1).asnumpy()
+            frames_part1 = _batch_to_numpy(vr.get_batch(frame_ids_part1))
             vr2 = decord.VideoReader(
                 osp.join(
                     root, "{}.mp4".format(vid), "{}.mp4".format(chunk_start + chunk_len)
@@ -85,7 +97,7 @@ def video_loader(
             frame_ids_part2 = [
                 min(frame_id % len(vr), len(vr2) - 1) for frame_id in frame_ids_part2
             ]
-            frames_part2 = vr2.get_batch(frame_ids_part2).asnumpy()
+            frames_part2 = _batch_to_numpy(vr2.get_batch(frame_ids_part2))
             frames = np.concatenate([frames_part1, frames_part2], axis=0)
         # the next chunk does not exist; the current chunk is the last one
         except (RuntimeError, decord.DECORDError) as error:
@@ -96,7 +108,7 @@ def video_loader(
                 num_segments=clip_length,
                 jitter=jitter,
             )
-            frames = vr.get_batch(frame_ids).asnumpy()
+            frames = _batch_to_numpy(vr.get_batch(frame_ids))
 
     frames = [torch.tensor(frame, dtype=torch.float32) for frame in frames]
     return torch.stack(frames, dim=0)
@@ -120,7 +132,7 @@ def get_frame_ids(start_frame, end_frame, num_segments=32, jitter=True):
 def video_loader_by_frames(root, vid, frame_ids):
     vr = decord.VideoReader(osp.join(root, vid))
     try:
-        frames = vr.get_batch(frame_ids).asnumpy()
+        frames = _batch_to_numpy(vr.get_batch(frame_ids))
         frames = [torch.tensor(frame, dtype=torch.float32) for frame in frames]
     except (IndexError, decord.DECORDError) as error:
         print(error)
