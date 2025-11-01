@@ -1,11 +1,8 @@
 import argparse
 from collections import OrderedDict
 from functools import partial
-from itertools import islice
-import json
 import os
 import time
-from typing import Any
 import numpy as np
 import pandas as pd
 
@@ -20,7 +17,6 @@ from avion.data.clip_dataset import VideoCaptionDatasetCLIP
 from avion.data.tokenizer import tokenize
 from avion.data.transforms import Permute
 
-from csv import reader
 from avion.losses.losses import ClipLoss
 import avion.models.model_clip as model_clip
 from avion.optim.schedulers import cosine_scheduler
@@ -28,19 +24,17 @@ import avion.utils.distributed as dist_utils
 from avion.utils.evaluation_ek100mir import get_mAP, get_nDCG
 from avion.utils.meters import AverageMeter, ProgressMeter
 from avion.utils.misc import check_loss_nan
-from second_party.evaluation.charades.dataset import CharadesEgo
-from second_party.evaluation.charades.transforms import init_video_transform_dict
-from second_party.evaluation.charades.utils import sim_matrix, charades_map
 
-# from second_party.evaluation.egomcq.dataset import VideoCaptionDatasetMCQ
 from second_party.evaluation.dataset import get_downstream_dataset
 from second_party.evaluation.transforms import get_val_transform
 from second_party.evaluation.label_map import generate_label_map
-from second_party.evaluation.utils import validate_zeroshot
 
-# from sklearn.metrics import confusion_matrix
-# from second_party.evaluation.utils import get_mean_accuracy
-# from second_party.evaluation.utils import validate_mcq
+from second_party.evaluation.utils import (
+    validate_charades_ego,
+    validate_egtea,
+    plot_confusion_matrix,
+)
+
 
 # Additional imports
 from dotenv import load_dotenv
@@ -274,17 +268,17 @@ def get_args_parser():
     #     default=os.environ.get("EGO4D_MCQ_META_DIR"),
     # )
 
-    # parser.add_argument(
-    #     "--egtea-data-dir",
-    #     type=str,
-    #     default=os.environ.get("EGTEA_DATA_DIR"),
-    # )
+    parser.add_argument(
+        "--egtea-data-dir",
+        type=str,
+        default=os.environ.get("EGTEA_DATA_DIR"),
+    )
 
-    # parser.add_argument(
-    #     "--egtea-meta-dir",
-    #     type=str,
-    #     default=os.environ.get("EGTEA_META_DIR"),
-    # )
+    parser.add_argument(
+        "--egtea-meta-dir",
+        type=str,
+        default=os.environ.get("EGTEA_META_DIR"),
+    )
 
     return parser
 
@@ -550,14 +544,7 @@ def main(args):
         rcc_params=(crop_size,),
     )
 
-    # python eval_zeroshot.py 
-    #   --dataset charades_ego 
-    #   --metadata-val datasets/CharadesEgo/CharadesEgo/CharadesEgo_v1_test_only1st.csv 
-    #   --root datasets/CharadesEgo/CharadesEgo_v1_480/ 
-    #   --clip-length 4 
-    #   --clip-stride 16 
-    #   --sparse-sample 
-    #   --resume $PATH
+    # Source: https://github.com/facebookresearch/LaViLa/blob/8002b5ab0db31789b9897a0a9c36729099e21ad4/docs/MODEL_ZOO.md
     charades_kwargs = dict(
         dataset="charades_ego",
         root=args.charades_data_dir,
@@ -586,54 +573,34 @@ def main(args):
         label_mapping=charades_ego_mapping_vn2act,
     )
 
-    # python eval_zeroshot.py --dataset ego4d_mcq --metadata-val datasets/Ego4D/egomcq.json --root datasets/Ego4D/video_5min_chunks_288px/ --clip-length 4 --resume $PATH --use-half -j 4
-    # egomcq_kwargs = dict(
-    #     dataset="egomcq",
-    #     root=args.egomcq_data_dir,
-    #     metadata_val=args.egomcq_meta_dir,
-    #     num_clips=1,
-    #     clip_length=4,
-    #     clip_stride=1,
-    #     sparse_sample=False,
-    #     num_crops=1,
-    # )
-    # egomcq_val_dataset = get_downstream_dataset(
-    #     get_val_transform(
-    #         args.model,
-    #         egomcq_kwargs.num_crops,
-    #         crop_size,
-    #         egomcq_kwargs.clip_length,
-    #         egomcq_kwargs.num_clips,
-    #     ),
-    #     tokenizer,
-    #     egomcq_kwargs,
-    #     subset="val",
-    #     label_mapping=None,
-    # )
+    # Source: https://github.com/facebookresearch/LaViLa/blob/8002b5ab0db31789b9897a0a9c36729099e21ad4/docs/MODEL_ZOO.md
+    egtea_kwargs = dict(
+        dataset="egtea",
+        root=args.egtea_data_dir,
+        metadata_val=f"{args.egtea_meta_dir}/test_split1.txt",
+        num_clips=10,
+        clip_length=4,  # LaViLa by default uses 16 frames per clip, but we only support 4 frames per clip
+        clip_stride=2,
+        num_crops=3,
+        sparse_sample=False,
+    )
 
-    # python eval_zeroshot.py --dataset egtea --metadata-val datasets/EGTEA/test_split1.txt --root datasets/EGTEA/cropped_clips/ --clip-length 16 --clip-stride 2 --num-crops 3 --num-clips 10 --resume $PATH
-    # egtea_kwargs = dict(
-    #     dataset="egtea",
-    #     root=args.egtea_data_dir,
-    #     metadata_val=args.egtea_meta_dir,
-    #     num_clips=10,
-    #     clip_length=16,
-    #     clip_stride=2,
-    #     num_crops=3,
-    # )
-    # egtea_val_dataset = get_downstream_dataset(
-    #     get_val_transform(
-    #         args.model,
-    #         egtea_kwargs.num_crops,
-    #         crop_size,
-    #         egtea_kwargs.clip_length,
-    #         egtea_kwargs.num_clips,
-    #     ),
-    #     tokenizer,
-    #     egtea_kwargs,
-    #     subset="val",
-    #     label_mapping=None,
-    # )
+    egtea_labels, egtea_mapping_vn2act = generate_label_map(
+        root=args.egtea_meta_dir, dataset=egtea_kwargs["dataset"]
+    )
+
+    egtea_val_dataset = get_downstream_dataset(
+        get_val_transform(
+            args.model,
+            egtea_kwargs["num_crops"],
+            crop_size,
+            egtea_kwargs["clip_length"],
+            egtea_kwargs["num_clips"],
+        ),
+        egtea_kwargs,
+        subset="val",
+        label_mapping=egtea_mapping_vn2act,
+    )
 
     # after you build val_loader, add/replace this block
     if args.distributed:
@@ -696,92 +663,56 @@ def main(args):
     if dist_utils.is_main_process():
         charades_ego_val_loader = torch.utils.data.DataLoader(
             charades_ego_val_dataset,
-            batch_size=args.batch_size,
+            batch_size=256,
             shuffle=False,
             num_workers=args.workers,
             pin_memory=True,
             drop_last=False,
         )
 
-        # egomcq_val_loader = torch.utils.data.DataLoader(
-        #     egomcq_val_dataset,
-        #     batch_size=args.batch_size,
-        #     shuffle=False,
-        #     num_workers=args.workers,
-        #     pin_memory=True,
-        #     drop_last=False,
-        # )
-
-        # egtea_val_loader = torch.utils.data.DataLoader(
-        #     egtea_val_dataset,
-        #     batch_size=args.batch_size,
-        #     shuffle=False,
-        #     num_workers=args.workers,
-        #     pin_memory=True,
-        #     drop_last=False,
-        # )
+        egtea_val_loader = torch.utils.data.DataLoader(
+            egtea_val_dataset,
+            batch_size=16,
+            shuffle=False,
+            num_workers=args.workers,
+            pin_memory=True,
+            drop_last=False,
+        )
         print("len(charades_ego_val_loader) = {}".format(len(charades_ego_val_loader)))
-        # print("len(egomcq_val_loader) = {}".format(len(egomcq_val_loader)))
-        # print("len(egtea_val_loader) = {}".format(len(egtea_val_loader)))
+        print("len(egtea_val_loader) = {}".format(len(egtea_val_loader)))
     else:
         charades_ego_val_loader = None
-        # egomcq_val_loader = None
-        # egtea_val_loader = None
+        egtea_val_loader = None
 
     print("len(val_loader) = {}".format(len(val_loader)))
 
     if args.evaluate:
         if dist_utils.is_main_process():
-            charades_ego_preds, charades_ego_targets = validate_zeroshot(
-                charades_ego_val_loader,
-                ["{}"],
-                charades_ego_labels,
-                model,
-                tokenizer,
+            charades_ego_mAP = validate_charades_ego(
+                charades_ego_val_loader, charades_ego_labels, model, tokenizer
             )
 
-            charades_ego_mAP, _, _ = charades_map(
-                charades_ego_preds.numpy(), charades_ego_targets.numpy()
+            wandb.log({f"test_charades_ego_mAP": charades_ego_mAP}, step=0)
+
+            egtea_mean_class_acc, egtea_top1_acc, cm = validate_egtea(
+                egtea_val_loader, egtea_labels, model, tokenizer
             )
 
-            print("Charades Ego mAP: {:.3f}".format(charades_ego_mAP))
+            wandb.log(
+                {
+                    "test_egtea_mean_class_accuracy": egtea_mean_class_acc,
+                    "test_egtea_top_1_accuracy": egtea_top1_acc,
+                    # "test_egtea_confusion_matrix": wandb.Image(
+                    #     plot_confusion_matrix(cm)
+                    # ),
+                },
+                step=0,
+            )
 
-            # egtea_preds, egtea_targets = validate_zeroshot(
-            #     egtea_val_loader, ["{}"], None, model, tokenizer
-            # )
+        val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
 
-            # egtea_preds, egtea_targets = egtea_preds.numpy(), egtea_targets.numpy()
-            # cm = confusion_matrix(egtea_targets, egtea_preds.argmax(axis=1))
-            # egtea_mean_class_acc, egtea_top1_acc = get_mean_accuracy(cm)
-
-            # print(
-            #     "EGTEA Mean Acc: {:.3f}, Top-1 Acc: {:.3f}".format(
-            #         egtea_mean_class_acc, egtea_top1_acc
-            #     )
-            # )
-
-            # egomcq_metrics = validate_mcq(egomcq_val_loader, model, use_half=True)
-
-            # print(egomcq_metrics)
-
-            # charades_val_stats = validate_charades_ego(
-            #     charades_val_loader, model, tokenizer, args
-            # )
-            # wandb.log(
-            #     {f"test_charades_{k}": v for k, v in charades_val_stats.items()}, step=0
-            # )
-
-            # egomcq_val_stats = validate_egomcq(
-            #     egomcq_val_loader, model, tokenizer, args
-            # )
-            # wandb.log(
-            #     {f"test_egomcq_{k}": v for k, v in egomcq_val_stats.items()}, step=0
-            # )
-
-        # val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
-
-        # if dist_utils.is_main_process():
-        #     wandb.log(data={f"test_{k}": v for k, v in val_stats.items()}, step=0)
+        if dist_utils.is_main_process():
+            wandb.log(data={f"test_{k}": v for k, v in val_stats.items()}, step=1)
 
         return
 
@@ -829,11 +760,24 @@ def main(args):
             continue
 
         if dist_utils.is_main_process():
-            charades_val_stats = validate_charades_ego(
-                charades_val_loader, model, tokenizer, args
+            charades_ego_mAP = validate_charades_ego(
+                charades_ego_val_loader, charades_ego_labels, model, tokenizer
             )
+
+            wandb.log({f"test_charades_ego_mAP": charades_ego_mAP}, step=wandb.run.step)
+
+            egtea_mean_class_acc, egtea_top1_acc, cm = validate_egtea(
+                egtea_val_loader, egtea_labels, model, tokenizer
+            )
+
             wandb.log(
-                {f"test_charades_{k}": v for k, v in charades_val_stats.items()},
+                {
+                    "test_egtea_mean_class_accuracy": egtea_mean_class_acc,
+                    "test_egtea_top_1_accuracy": egtea_top1_acc,
+                    # "test_egtea_confusion_matrix": wandb.Image(
+                    #     plot_confusion_matrix(cm)
+                    # ),
+                },
                 step=wandb.run.step,
             )
 

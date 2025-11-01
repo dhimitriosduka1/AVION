@@ -2,6 +2,9 @@ import torch
 import numpy as np
 import torch.cuda.amp as amp
 import avion.utils.distributed as dist_utils
+from sklearn.metrics import confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 from tqdm import tqdm
 
@@ -164,3 +167,96 @@ def egomcq_accuracy_metrics(preds, labels, types):
         accuracy = correct / total
         metrics[group_i] = accuracy * 100
     return metrics
+
+
+def map(submission_array, gt_array):
+    """Returns mAP, weighted mAP, and AP array"""
+    m_aps = []
+    n_classes = submission_array.shape[1]
+    for oc_i in range(n_classes):
+        sorted_idxs = np.argsort(-submission_array[:, oc_i])
+        tp = gt_array[:, oc_i][sorted_idxs] == 1
+        fp = np.invert(tp)
+        n_pos = tp.sum()
+        if n_pos < 0.1:
+            m_aps.append(float("nan"))
+            continue
+        fp.sum()
+        f_pcs = np.cumsum(fp)
+        t_pcs = np.cumsum(tp)
+        prec = t_pcs / (f_pcs + t_pcs).astype(float)
+        avg_prec = 0
+        for i in range(submission_array.shape[0]):
+            if tp[i]:
+                avg_prec += prec[i]
+        m_aps.append(avg_prec / n_pos.astype(float))
+    m_aps = np.array(m_aps)
+    m_ap = np.mean(m_aps)
+    w_ap = m_aps * gt_array.sum(axis=0) / gt_array.sum().sum().astype(float)
+    return m_ap, w_ap, m_aps
+
+
+def charades_map(submission_array, gt_array):
+    """
+    Approximate version of the charades evaluation function
+    For precise numbers, use the submission file with the official matlab script
+    """
+    fix = submission_array.copy()
+    empty = np.sum(gt_array, axis=1) == 0
+    fix[empty, :] = np.NINF
+    return map(fix, gt_array)
+
+
+def validate_charades_ego(val_loader, labels, model, tokenizer):
+    charades_ego_preds, charades_ego_targets = validate_zeroshot(
+        val_loader,
+        ["{}"],
+        labels,
+        model,
+        tokenizer,
+    )
+
+    charades_ego_mAP, _, _ = charades_map(
+        charades_ego_preds.numpy(), charades_ego_targets.numpy()
+    )
+
+    print("Charades Ego mAP: {:.3f}".format(charades_ego_mAP))
+
+    return charades_ego_mAP
+
+
+def validate_egtea(val_loader, labels, model, tokenizer):
+    egtea_preds, egtea_targets = validate_zeroshot(
+        val_loader, ["{}"], labels, model, tokenizer
+    )
+
+    cm = confusion_matrix(egtea_targets.numpy(), egtea_preds.numpy().argmax(axis=1))
+
+    egtea_mean_class_acc, egtea_top1_acc = get_mean_accuracy(cm)
+
+    print(
+        "EGTEA Mean Acc: {:.3f}, Top-1 Acc: {:.3f}".format(
+            egtea_mean_class_acc, egtea_top1_acc
+        )
+    )
+
+    return egtea_mean_class_acc, egtea_top1_acc, cm
+
+
+def plot_confusion_matrix(cm, labels):
+    fig = plt.figure(figsize=(10, 10))
+    sns.heatmap(
+        cm,
+        annot=True,
+        fmt="d",
+        cmap="Blues",
+        xticklabels=labels,  # Add labels for predicted classes
+        yticklabels=labels,  # Add labels for true classes
+    )
+    plt.title("EGTEA Confusion Matrix")
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+    plt.xticks(rotation=45, ha="right")  # Optional: rotate labels for readability
+    plt.yticks(rotation=0)
+    plt.tight_layout()
+    return fig
