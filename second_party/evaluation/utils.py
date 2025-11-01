@@ -3,6 +3,8 @@ import numpy as np
 import torch.cuda.amp as amp
 import avion.utils.distributed as dist_utils
 
+from tqdm import tqdm
+
 
 def validate_zeroshot(
     val_loader, templates, labels, model, tokenizer, disable_amp=False
@@ -16,7 +18,7 @@ def validate_zeroshot(
     with amp.autocast(enabled=not disable_amp):
         with torch.no_grad():
             text_features = []
-            for label in labels:
+            for label in tqdm(labels, desc="Encoding captions"):
                 if isinstance(label, list):
                     texts = [tmpl.format(lbl) for tmpl in templates for lbl in label]
                 else:
@@ -40,7 +42,7 @@ def validate_zeroshot(
             text_features = torch.stack(text_features, dim=0)
 
             print("=> start forwarding")
-            for _, (images, target) in enumerate(val_loader):
+            for _, (images, target) in tqdm(enumerate(val_loader), desc="Forwarding"):
                 if isinstance(images, torch.Tensor):
                     images = images.cuda(non_blocking=True)
 
