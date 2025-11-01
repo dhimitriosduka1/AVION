@@ -287,6 +287,7 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
                     end_second=float(option["clip_end"]),
                     clip_length=clip_length,
                     jitter=is_training,
+                    chunk_len=15,  # 15 seconds per chunk based on the AVION preprocessing
                 )
                 frames_options.append(frames)
                 narration_options.append(option["clip_text"])
@@ -475,7 +476,7 @@ class VideoCaptionDatasetMCQ(VideoCaptionDatasetBase):
         self.clip_length = clip_length
         self.clip_stride = clip_stride
         self.sparse_sample = sparse_sample
-        self.narration_selection = narration_selection
+        # self.narration_selection = narration_selection
 
     def __getitem__(self, i):
 
@@ -486,7 +487,7 @@ class VideoCaptionDatasetMCQ(VideoCaptionDatasetBase):
                 clip_length=self.clip_length,
                 clip_stride=self.clip_stride,
                 sparse_sample=self.sparse_sample,
-                narration_selection=self.narration_selection,
+                # narration_selection=self.narration_selection,
             )
         )
 

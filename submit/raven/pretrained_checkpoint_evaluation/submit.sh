@@ -40,19 +40,14 @@ mkdir -p $EXP_PATH
 
 export PYTHONPATH=.:third_party/decord/python/
     
-srun --cpu_bind=v --accel-bind=gn torchrun \
-    --nproc_per_node=1 \
-    --nnodes=$SLURM_NNODES \
-    --node_rank=$SLURM_NODEID \
-    --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
-    --rdzv_backend=c10d \
+torchrun \
     scripts/main_lavila_pretrain.py \
     --train-metadata /ptmp/dduka/databases/ego4d/ego4d_train.rephraser.no_punkt_top3.pkl \
     --train-metadata-aux /ptmp/dduka/databases/ego4d/ego4d_train.narrator_63690737.return_10.pkl \
     --use-flash-attn \
     --grad-checkpointing \
     --use-fast-conv1 \
-    --batch-size 512 \
+    --batch-size 256 \
     --freeze-temperature \
     --fused-decode-crop \
     --fix-lr \

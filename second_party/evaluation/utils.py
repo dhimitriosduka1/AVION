@@ -97,58 +97,51 @@ def get_mean_accuracy(cm):
     return 100 * np.mean(list_acc), 100 * np.trace(cm) / np.sum(cm)
 
 
-def validate_mcq(val_loader, model, use_half=False):
+def validate_mcq(val_loader, model, disable_amp=False):
     model.eval()
 
-    if use_half:
-        model.half()
+    with amp.autocast(enabled=not disable_amp):
+        with torch.no_grad():
+            all_preds = []
+            all_gts = []
+            all_types = []
 
-    with torch.no_grad():
-        all_preds = []
-        all_gts = []
-        all_types = []
+            for _, inputs in tqdm(enumerate(val_loader), desc="Forwarding"):
+                texts_query = inputs[0].cuda(non_blocking=True)
+                frames_options = inputs[1].cuda(non_blocking=True)
 
-        for i, inputs in enumerate(val_loader):
-            texts_query = inputs[0].cuda(non_blocking=True)
-            frames_options = inputs[1].cuda(non_blocking=True)
-            if use_half:
-                frames_options = frames_options.half()
-            answer = inputs[3]
-            q_type = inputs[4]
-            if len(inputs) == 7:
-                masks_query = inputs[5].cuda(non_blocking=True)
-            else:
-                masks_query = None
+                answer = inputs[3]
+                q_type = inputs[4]
 
-            batch_size = frames_options.shape[0]
+                batch_size = frames_options.shape[0]
 
-            frames_options = frames_options.view(-1, *frames_options.shape[2:])
-            image_features = dist_utils.get_model(model).encode_image(frames_options)
-            image_features = image_features.view(
-                batch_size, -1, *image_features.shape[1:]
-            )
-
-            if masks_query is not None:
-                query_features = dist_utils.get_model(model).encode_text(
-                    texts_query, attention_mask=masks_query
+                frames_options = frames_options.view(-1, *frames_options.shape[2:])
+                image_features = dist_utils.get_model(model).encode_image(
+                    frames_options
                 )
-            else:
+                image_features = image_features.view(
+                    batch_size, -1, *image_features.shape[1:]
+                )
+
+                texts_query = texts_query.view(-1, 77).contiguous()
                 query_features = dist_utils.get_model(model).encode_text(texts_query)
 
-            all_gts.append(answer)
-            all_types.append(q_type)
+                all_gts.append(answer)
+                all_types.append(q_type)
 
-            for j in range(batch_size):
-                similarity_matrix = torch.matmul(query_features[j], image_features[j].T)
-                similarity_matrix = similarity_matrix.cpu().detach()
-                all_preds.append(similarity_matrix)
+                for j in range(batch_size):
+                    similarity_matrix = torch.matmul(
+                        query_features[j], image_features[j].T
+                    )
+                    similarity_matrix = similarity_matrix.cpu().detach()
+                    all_preds.append(similarity_matrix)
 
-        all_preds = torch.stack(all_preds)
-        all_gts = torch.cat(all_gts)
-        all_types = torch.cat(all_types)
-        metrics = egomcq_accuracy_metrics(all_preds, all_gts, all_types)
+            all_preds = torch.stack(all_preds)
+            all_gts = torch.cat(all_gts)
+            all_types = torch.cat(all_types)
+            metrics = egomcq_accuracy_metrics(all_preds, all_gts, all_types)
 
-        return metrics
+    return metrics
 
 
 def egomcq_accuracy_metrics(preds, labels, types):

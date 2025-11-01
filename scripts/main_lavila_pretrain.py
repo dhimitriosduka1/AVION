@@ -25,14 +25,17 @@ from avion.utils.evaluation_ek100mir import get_mAP, get_nDCG
 from avion.utils.meters import AverageMeter, ProgressMeter
 from avion.utils.misc import check_loss_nan
 
-from second_party.evaluation.dataset import get_downstream_dataset
+from second_party.evaluation.dataset import (
+    get_downstream_dataset,
+    VideoCaptionDatasetMCQ,
+)
 from second_party.evaluation.transforms import get_val_transform
 from second_party.evaluation.label_map import generate_label_map
 
 from second_party.evaluation.utils import (
     validate_charades_ego,
     validate_egtea,
-    plot_confusion_matrix,
+    validate_mcq,
 )
 
 
@@ -256,17 +259,17 @@ def get_args_parser():
         default=os.environ.get("CHARADES_META_DIR"),
     )
 
-    # parser.add_argument(
-    #     "--egomcq-data-dir",
-    #     type=str,
-    #     default=os.environ.get("EGO4D_MCQ_DATA_DIR"),
-    # )
+    parser.add_argument(
+        "--egomcq-data-dir",
+        type=str,
+        default=os.environ.get("EGO4D_MCQ_DATA_DIR"),
+    )
 
-    # parser.add_argument(
-    #     "--egomcq-meta-dir",
-    #     type=str,
-    #     default=os.environ.get("EGO4D_MCQ_META_DIR"),
-    # )
+    parser.add_argument(
+        "--egomcq-meta-dir",
+        type=str,
+        default=os.environ.get("EGO4D_MCQ_META_DIR"),
+    )
 
     parser.add_argument(
         "--egtea-data-dir",
@@ -602,6 +605,36 @@ def main(args):
         label_mapping=egtea_mapping_vn2act,
     )
 
+    # Source: https://github.com/facebookresearch/LaViLa/blob/main/eval_zeroshot.py
+    egomcq_kwargs = dict(
+        dataset="ego4d_mcq",
+        root=args.egomcq_data_dir,
+        metadata_val=f"{args.egomcq_meta_dir}/egomcq.json",
+        num_clips=1,
+        clip_length=4,
+        clip_stride=16,
+        num_crops=1,
+        sparse_sample=False,
+    )
+
+    egomcq_val_dataset = VideoCaptionDatasetMCQ(
+        egomcq_kwargs["dataset"],
+        egomcq_kwargs["root"],
+        egomcq_kwargs["metadata_val"],
+        transform=get_val_transform(
+            args.model,
+            egomcq_kwargs["num_crops"],
+            crop_size,
+            egomcq_kwargs["clip_length"],
+            egomcq_kwargs["num_clips"],
+        ),
+        is_training=False,
+        tokenizer=tokenizer,
+        clip_length=egomcq_kwargs["clip_length"],
+        clip_stride=egomcq_kwargs["clip_stride"],
+        sparse_sample=egomcq_kwargs["sparse_sample"],
+    )
+
     # after you build val_loader, add/replace this block
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
@@ -678,11 +711,23 @@ def main(args):
             pin_memory=True,
             drop_last=False,
         )
+
+        egomcq_val_loader = torch.utils.data.DataLoader(
+            egomcq_val_dataset,
+            batch_size=256,
+            shuffle=False,
+            num_workers=args.workers,
+            pin_memory=True,
+            drop_last=False,
+        )
+
         print("len(charades_ego_val_loader) = {}".format(len(charades_ego_val_loader)))
         print("len(egtea_val_loader) = {}".format(len(egtea_val_loader)))
+        print("len(egomcq_val_loader) = {}".format(len(egomcq_val_loader)))
     else:
         charades_ego_val_loader = None
         egtea_val_loader = None
+        egomcq_val_loader = None
 
     print("len(val_loader) = {}".format(len(val_loader)))
 
@@ -706,6 +751,13 @@ def main(args):
                     #     plot_confusion_matrix(cm)
                     # ),
                 },
+                step=0,
+            )
+
+            egomcq_mAP = validate_mcq(egomcq_val_loader, model)
+
+            wandb.log(
+                data={f"test_{k}": v for k, v in egomcq_mAP.items()},
                 step=0,
             )
 
@@ -778,6 +830,13 @@ def main(args):
                     #     plot_confusion_matrix(cm)
                     # ),
                 },
+                step=wandb.run.step,
+            )
+
+            egomcq_mAP = validate_mcq(egomcq_val_loader, model)
+
+            wandb.log(
+                data={f"test_{k}": v for k, v in egomcq_mAP.items()},
                 step=wandb.run.step,
             )
 
