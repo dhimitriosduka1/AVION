@@ -7,6 +7,8 @@ import os.path as osp
 import torch
 import decord
 
+import os
+
 
 def datetime2sec(str):
     hh, mm, ss = str.split(":")
@@ -148,11 +150,26 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
         self.is_trimmed = is_trimmed
 
         if self.dataset == "ego4d_mcq":
+            print(f"Loading EGO4D MCQ dataset from {self.root}")
             with open(metadata, "r") as f:
                 self.samples = json.load(f)
         elif self.dataset == "egtea":
-            video_list = glob.glob(osp.join(self.root, "*/*"))
-            len_dict = {video: len(decord.VideoReader(video)) for video in video_list}
+            print(f"Loading EGTEA dataset from {self.root}")
+
+            if not os.path.exists(osp.join(self.root, "len_dict.json")):
+                print(f"Computing video lengths for {self.root}")
+                video_list = glob.glob(osp.join(self.root, "*/*"))
+                len_dict = {
+                    video: len(decord.VideoReader(video)) for video in video_list
+                }
+
+                with open(osp.join(self.root, "len_dict.json"), "w") as f:
+                    json.dump(len_dict, f)
+
+            else:
+                print(f"Loading video lengths from cache for {self.root}")
+                with open(osp.join(self.root, "len_dict.json"), "r") as f:
+                    len_dict = json.load(f)
 
             vn_list, labels = [], []
             for row in open(osp.join(osp.dirname(metadata), "action_idx.txt")):
@@ -166,6 +183,7 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
                 vn: narration for vn, narration in zip(vn_list, labels)
             }
 
+            print(f"Loading EGTEA metadata from {metadata}")
             self.samples = []
             with open(metadata) as f:
                 for row in f:
@@ -184,10 +202,25 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
                         )
                     )
         elif self.dataset == "charades_ego":
-            video_list = glob.glob(osp.join(self.root, "*.mp4"))
-            fps_dict = {
-                video: decord.VideoReader(video).get_avg_fps() for video in video_list
-            }
+            print(f"Loading Charades EGO dataset from {self.root}")
+
+            if not os.path.exists(osp.join(self.root, "fps_dict.json")):
+                print(f"Computing video FPS for {self.root}")
+
+                video_list = glob.glob(osp.join(self.root, "*.mp4"))
+                fps_dict = {
+                    video: decord.VideoReader(video).get_avg_fps()
+                    for video in video_list
+                }
+
+                with open(osp.join(self.root, "fps_dict.json"), "w") as f:
+                    json.dump(fps_dict, f)
+            else:
+                print(f"Loading video FPS from cache for {self.root}")
+                with open(osp.join(self.root, "fps_dict.json"), "r") as f:
+                    fps_dict = json.load(f)
+
+            print(f"Loading Charades EGO metadata from {metadata}")
             self.samples = []
             with open(metadata) as f:
                 csv_reader = csv.reader(f)
@@ -223,8 +256,11 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
                         fps = fps_dict[osp.join(self.root, vid_path)]
                         duration = fps * float(row[10])
                         self.samples.append((vid_path, 0, duration, action_list))
+
         else:
             raise NotImplementedError
+
+        print(f"Loaded {len(self.samples)} samples for {self.dataset} dataset")
 
     def get_raw_item(
         self,
