@@ -1,1 +1,0 @@
-Evaluation on CharadesEgo is based on the https://github.com/showlab/EgoVLP/ implementation.

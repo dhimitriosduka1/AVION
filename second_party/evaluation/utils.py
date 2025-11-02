@@ -80,10 +80,31 @@ def validate_zeroshot(
                     logits_per_image = logits_all_clips.max(0).values
                     logits_per_image = torch.softmax(logits_per_image, dim=1)
 
-                all_outputs.append(logits_per_image.cpu())
-                all_targets.append(target.cpu())
+                # Gather across GPUs if distributed
+                if (
+                    torch.distributed.is_available()
+                    and torch.distributed.is_initialized()
+                ):
+                    world_size = torch.distributed.get_world_size()
+                    gathered_logits = [
+                        torch.zeros_like(logits_per_image) for _ in range(world_size)
+                    ]
+                    gathered_targets = [
+                        torch.zeros_like(target) for _ in range(world_size)
+                    ]
+                    torch.distributed.all_gather(gathered_logits, logits_per_image)
+                    torch.distributed.all_gather(gathered_targets, target)
+                    for r in range(world_size):
+                        all_outputs.append(gathered_logits[r].detach().cpu())
+                        all_targets.append(gathered_targets[r].detach().cpu())
+                else:
+                    all_outputs.append(logits_per_image.detach().cpu())
+                    all_targets.append(target.detach().cpu())
 
-    return torch.cat(all_outputs), torch.cat(all_targets)
+    all_outputs = torch.cat(all_outputs) if len(all_outputs) > 0 else None
+    all_targets = torch.cat(all_targets) if len(all_targets) > 0 else None
+
+    return all_outputs, all_targets
 
 
 def get_mean_accuracy(cm):
@@ -110,8 +131,8 @@ def validate_mcq(val_loader, model, disable_amp=False):
                 texts_query = inputs[0].cuda(non_blocking=True)
                 frames_options = inputs[1].cuda(non_blocking=True)
 
-                answer = inputs[3]
-                q_type = inputs[4]
+                answer = inputs[3].cuda(non_blocking=True)
+                q_type = inputs[4].cuda(non_blocking=True)
 
                 batch_size = frames_options.shape[0]
 
@@ -126,19 +147,36 @@ def validate_mcq(val_loader, model, disable_amp=False):
                 texts_query = texts_query.view(-1, 77).contiguous()
                 query_features = dist_utils.get_model(model).encode_text(texts_query)
 
-                all_gts.append(answer)
-                all_types.append(q_type)
+                similarity = torch.einsum("bd,bkd->bk", query_features, image_features)
 
-                for j in range(batch_size):
-                    similarity_matrix = torch.matmul(
-                        query_features[j], image_features[j].T
-                    )
-                    similarity_matrix = similarity_matrix.cpu().detach()
-                    all_preds.append(similarity_matrix)
+                if (
+                    torch.distributed.is_available()
+                    and torch.distributed.is_initialized()
+                ):
+                    world_size = torch.distributed.get_world_size()
+                    gathered_preds = [
+                        torch.zeros_like(similarity) for _ in range(world_size)
+                    ]
+                    gathered_gts = [torch.zeros_like(answer) for _ in range(world_size)]
+                    gathered_types = [
+                        torch.zeros_like(q_type) for _ in range(world_size)
+                    ]
+                    torch.distributed.all_gather(gathered_preds, similarity)
+                    torch.distributed.all_gather(gathered_gts, answer)
+                    torch.distributed.all_gather(gathered_types, q_type)
+                    for r in range(world_size):
+                        all_preds.append(gathered_preds[r].detach().cpu())
+                        all_gts.append(gathered_gts[r].detach().cpu())
+                        all_types.append(gathered_types[r].detach().cpu())
+                else:
+                    all_preds.append(similarity.detach().cpu())
+                    all_gts.append(answer.detach().cpu())
+                    all_types.append(q_type.detach().cpu())
 
-            all_preds = torch.stack(all_preds)
-            all_gts = torch.cat(all_gts)
-            all_types = torch.cat(all_types)
+            all_preds = torch.cat(all_preds, dim=0)
+            all_gts = torch.cat(all_gts, dim=0)
+            all_types = torch.cat(all_types, dim=0)
+
             metrics = egomcq_accuracy_metrics(all_preds, all_gts, all_types)
 
     return metrics

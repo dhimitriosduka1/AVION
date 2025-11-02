@@ -35,7 +35,7 @@ echo "GPUs per node: $SLURM_GPUS_ON_NODE"
 
 cd /u/dduka/work/projects/Thesis/AVION
 
-RUN_NAME=DUAL_ENCODER_PRETRAIN_BASELINE_256
+RUN_NAME=DUAL_ENCODER_PRETRAIN_BASELINE_256_ADDITIONAL_EVALS
 EXP_PATH=/ptmp/dduka/work/training_metadata/avion/$RUN_NAME
 
 mkdir -p $EXP_PATH

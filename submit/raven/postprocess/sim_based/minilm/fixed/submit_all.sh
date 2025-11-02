@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-taus=(0.90 0.95)
+taus=(0.25 0.30)
 
 # Base log directory
 log_dir="/ptmp/dduka/work/logs/avion"

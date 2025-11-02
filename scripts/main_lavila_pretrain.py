@@ -641,8 +641,19 @@ def main(args):
         val_sampler = torch.utils.data.distributed.DistributedSampler(
             val_dataset, shuffle=False
         )
+        charades_ego_val_sampler = torch.utils.data.distributed.DistributedSampler(
+            charades_ego_val_dataset, shuffle=False
+        )
+        egtea_val_sampler = torch.utils.data.distributed.DistributedSampler(
+            egtea_val_dataset, shuffle=False
+        )
+        egomcq_val_sampler = torch.utils.data.distributed.DistributedSampler(
+            egomcq_val_dataset, shuffle=False
+        )
     else:
-        train_sampler = val_sampler = None
+        train_sampler = val_sampler = charades_ego_val_sampler = egtea_val_sampler = (
+            egomcq_val_sampler
+        ) = None
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -657,32 +668,6 @@ def main(args):
 
     print("len(train_loader) = {}".format(len(train_loader)))
 
-    if args.evaluate_train_dataset:
-        # Start evaluation at batch index args.start_batch (default 0)
-        start_batch = args.skip_to_batch
-
-        dataset = train_loader.dataset
-        sampler = train_loader.sampler
-        bs = train_loader.batch_size
-
-        # reconstruct the sample order from the sampler
-        indices = list(sampler)
-
-        # skip to the right place
-        start = start_batch * bs
-        total_batches = len(indices) // bs
-
-        # iterate from the chosen batch onwards
-        for _it, i in enumerate(range(start, len(indices), bs), start=start_batch):
-            batch_indices = indices[i : i + bs]
-            batch_samples = [dataset[j] for j in batch_indices]
-            train_loader.collate_fn(batch_samples)
-
-            if _it % 100 == 0:
-                print(f"===> Processed batch {_it} of {total_batches}")
-
-        return
-
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=args.batch_size,
@@ -693,78 +678,63 @@ def main(args):
         drop_last=False,
     )
 
-    if dist_utils.is_main_process():
-        charades_ego_val_loader = torch.utils.data.DataLoader(
-            charades_ego_val_dataset,
-            batch_size=256,
-            shuffle=False,
-            num_workers=args.workers,
-            pin_memory=True,
-            drop_last=False,
-        )
+    egomcq_val_loader = torch.utils.data.DataLoader(
+        egomcq_val_dataset,
+        batch_size=16,
+        shuffle=False,
+        num_workers=args.workers,
+        pin_memory=False,
+        drop_last=False,
+        sampler=egomcq_val_sampler,
+    )
 
-        egtea_val_loader = torch.utils.data.DataLoader(
-            egtea_val_dataset,
-            batch_size=16,
-            shuffle=False,
-            num_workers=args.workers,
-            pin_memory=True,
-            drop_last=False,
-        )
+    charades_ego_val_loader = torch.utils.data.DataLoader(
+        charades_ego_val_dataset,
+        batch_size=16,
+        shuffle=False,
+        num_workers=args.workers,
+        pin_memory=False,
+        drop_last=False,
+        sampler=charades_ego_val_sampler,
+    )
 
-        egomcq_val_loader = torch.utils.data.DataLoader(
-            egomcq_val_dataset,
-            batch_size=256,
-            shuffle=False,
-            num_workers=args.workers,
-            pin_memory=True,
-            drop_last=False,
-        )
+    egtea_val_loader = torch.utils.data.DataLoader(
+        egtea_val_dataset,
+        batch_size=16,
+        shuffle=False,
+        num_workers=args.workers,
+        pin_memory=False,
+        drop_last=False,
+        sampler=egtea_val_sampler,
+    )
 
-        print("len(charades_ego_val_loader) = {}".format(len(charades_ego_val_loader)))
-        print("len(egtea_val_loader) = {}".format(len(egtea_val_loader)))
-        print("len(egomcq_val_loader) = {}".format(len(egomcq_val_loader)))
-    else:
-        charades_ego_val_loader = None
-        egtea_val_loader = None
-        egomcq_val_loader = None
-
+    print("len(charades_ego_val_loader) = {}".format(len(charades_ego_val_loader)))
+    print("len(egtea_val_loader) = {}".format(len(egtea_val_loader)))
+    print("len(egomcq_val_loader) = {}".format(len(egomcq_val_loader)))
     print("len(val_loader) = {}".format(len(val_loader)))
 
     if args.evaluate:
-        if dist_utils.is_main_process():
-            charades_ego_mAP = validate_charades_ego(
-                charades_ego_val_loader, charades_ego_labels, model, tokenizer
-            )
+        charades_ego_mAP = validate_charades_ego(
+            charades_ego_val_loader, charades_ego_labels, model, tokenizer
+        )
 
-            wandb.log({f"test_charades_ego_mAP": charades_ego_mAP}, step=0)
+        egtea_mean_class_acc, egtea_top1_acc, cm = validate_egtea(
+            egtea_val_loader, egtea_labels, model, tokenizer
+        )
 
-            egtea_mean_class_acc, egtea_top1_acc, cm = validate_egtea(
-                egtea_val_loader, egtea_labels, model, tokenizer
-            )
-
-            wandb.log(
-                {
-                    "test_egtea_mean_class_accuracy": egtea_mean_class_acc,
-                    "test_egtea_top_1_accuracy": egtea_top1_acc,
-                    # "test_egtea_confusion_matrix": wandb.Image(
-                    #     plot_confusion_matrix(cm)
-                    # ),
-                },
-                step=0,
-            )
-
-            egomcq_mAP = validate_mcq(egomcq_val_loader, model)
-
-            wandb.log(
-                data={f"test_{k}": v for k, v in egomcq_mAP.items()},
-                step=0,
-            )
+        egomcq_mAP = validate_mcq(egomcq_val_loader, model)
 
         val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
 
         if dist_utils.is_main_process():
-            wandb.log(data={f"test_{k}": v for k, v in val_stats.items()}, step=1)
+            zsh_results = {
+                "test_charades_ego_mAP": charades_ego_mAP,
+                "test_egtea_mean_class_accuracy": egtea_mean_class_acc,
+                "test_egtea_top_1_accuracy": egtea_top1_acc,
+                "test_egomcq_mAP": egomcq_mAP,
+                **{f"test_{k}": v for k, v in val_stats.items()},
+            }
+            wandb.log(data=zsh_results, step=wandb.run.step)
 
         return
 
@@ -784,9 +754,27 @@ def main(args):
 
     # Perform zsh only if the start_epoch is 0
     if args.start_epoch == 0:
+        charades_ego_mAP = validate_charades_ego(
+            charades_ego_val_loader, charades_ego_labels, model, tokenizer
+        )
+
+        egtea_mean_class_acc, egtea_top1_acc, cm = validate_egtea(
+            egtea_val_loader, egtea_labels, model, tokenizer
+        )
+
+        egomcq_mAP = validate_mcq(egomcq_val_loader, model)
+
         val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
+
         if dist_utils.is_main_process():
-            wandb.log(data={f"test_{k}": v for k, v in val_stats.items()}, step=0)
+            zsh_results = {
+                "test_charades_ego_mAP": charades_ego_mAP,
+                "test_egtea_mean_class_accuracy": egtea_mean_class_acc,
+                "test_egtea_top_1_accuracy": egtea_top1_acc,
+                "test_egomcq_mAP": egomcq_mAP,
+                **{f"test_{k}": v for k, v in val_stats.items()},
+            }
+            wandb.log(data=zsh_results, step=0)
 
     print("=> beginning training")
     best_acc1 = 0.0
@@ -811,36 +799,28 @@ def main(args):
         if (epoch + 1) % args.eval_freq != 0:
             continue
 
-        if dist_utils.is_main_process():
-            charades_ego_mAP = validate_charades_ego(
-                charades_ego_val_loader, charades_ego_labels, model, tokenizer
-            )
+        charades_ego_mAP = validate_charades_ego(
+            charades_ego_val_loader, charades_ego_labels, model, tokenizer
+        )
 
-            wandb.log({f"test_charades_ego_mAP": charades_ego_mAP}, step=wandb.run.step)
+        egtea_mean_class_acc, egtea_top1_acc, cm = validate_egtea(
+            egtea_val_loader, egtea_labels, model, tokenizer
+        )
 
-            egtea_mean_class_acc, egtea_top1_acc, cm = validate_egtea(
-                egtea_val_loader, egtea_labels, model, tokenizer
-            )
-
-            wandb.log(
-                {
-                    "test_egtea_mean_class_accuracy": egtea_mean_class_acc,
-                    "test_egtea_top_1_accuracy": egtea_top1_acc,
-                    # "test_egtea_confusion_matrix": wandb.Image(
-                    #     plot_confusion_matrix(cm)
-                    # ),
-                },
-                step=wandb.run.step,
-            )
-
-            egomcq_mAP = validate_mcq(egomcq_val_loader, model)
-
-            wandb.log(
-                data={f"test_{k}": v for k, v in egomcq_mAP.items()},
-                step=wandb.run.step,
-            )
+        egomcq_mAP = validate_mcq(egomcq_val_loader, model)
 
         val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
+
+        if dist_utils.is_main_process():
+            zsh_results = {
+                "test_charades_ego_mAP": charades_ego_mAP,
+                "test_egtea_mean_class_accuracy": egtea_mean_class_acc,
+                "test_egtea_top_1_accuracy": egtea_top1_acc,
+                "test_egomcq_mAP": egomcq_mAP,
+                **{f"test_{k}": v for k, v in val_stats.items()},
+            }
+            wandb.log(data=zsh_results, step=wandb.run.step)
+
         acc1 = val_stats["avg_map"]
 
         is_best = acc1 > best_acc1

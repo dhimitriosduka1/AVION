@@ -174,6 +174,7 @@ def expand_window(
     anchor_idx: int,
     tau: float,
     mode: str = "fixed",
+    anchor_mode: str = "embedding",
 ) -> Tuple[float, float]:
     """
     Expand from anchor_idx left and right while similarity >= tau.
@@ -235,6 +236,13 @@ def expand_window(
 
     else:
         raise ValueError(f"Invalid mode: {mode}")
+
+    if anchor_mode == "ground_truth":
+        pass
+    elif anchor_mode == "captions":
+        anchor_embedding = precomputed_embeddings[anchor_idx]
+    else:
+        raise ValueError(f"Invalid anchor mode: {anchor_mode}")
 
     # Expand left
     left = anchor_idx
@@ -387,6 +395,7 @@ def _process_one_video(payload: Tuple[str, List[Tuple]], preprocess_captions: Ca
                 anchor_idx,
                 args["tau"],
                 args["mode"],
+                args["anchor_mode"],
             )
         except ValueError as e:
             print(f"Error resolving anchor index for video {video_id}: {e}")
@@ -436,7 +445,7 @@ def main(args):
 
     wandb.init(
         project="Thesis",
-        name=f"Threshold {args.tau} - Embeddings Number {args.embeddings_to_include} - Temperature {args.temperature} - Mode {args.mode} - Fn {args.preprocess_function} - Aggregation {args.aggregation_mode}",
+        name=f"Threshold {args.tau} - Embeddings Number {args.embeddings_to_include} - Temperature {args.temperature} - Mode {args.mode} - Fn {args.preprocess_function} - Aggregation {args.aggregation_mode} - Anchor Mode {args.anchor_mode}",
         config={**args.__dict__},
         group=f"Similarity Based Timestamp Shifting - {args.embedding_model}",
     )
@@ -490,6 +499,7 @@ def main(args):
         "tau": args.tau,
         "mode": args.mode,
         "aggregation_mode": args.aggregation_mode,
+        "anchor_mode": args.anchor_mode,
     }
 
     items = list(video_groups.items())
@@ -542,7 +552,7 @@ def main(args):
     output_file = (
         Path(args.output_path)
         / args.embedding_model
-        / f"ego4d_train_temperature_{args.temperature}_threshold_{args.tau}_embeddings_{args.embeddings_to_include}_mode_{args.mode}_aggregation_{args.aggregation_mode}.pkl"
+        / f"ego4d_train_temperature_{args.temperature}_threshold_{args.tau}_embeddings_{args.embeddings_to_include}_mode_{args.mode}_aggregation_{args.aggregation_mode}_anchor_mode_{args.anchor_mode}_{args.postfix}.pkl"
     )
     with open(output_file, "wb") as f:
         pickle.dump(results, f)
@@ -690,6 +700,19 @@ if __name__ == "__main__":
         default="mean",
         choices=["mean", "max_pooling"],
         help="Aggregation mode to use for the embeddings",
+    )
+    parser.add_argument(
+        "--anchor-mode",
+        type=str,
+        default="ground_truth",
+        choices=["ground_truth", "captions"],
+        help="Mode to use for the anchor embedding",
+    )
+    parser.add_argument(
+        "--postfix",
+        type=str,
+        default="",
+        help="Postfix to add to the output file name",
     )
     args = parser.parse_args()
     main(args)
