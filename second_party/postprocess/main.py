@@ -13,6 +13,9 @@ from typing import List, Dict, Any, Tuple, Callable
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+from scipy.sparse import diags
+from sklearn.cluster import AgglomerativeClustering
+
 
 def plot_distribution(
     values: List[float],
@@ -175,6 +178,7 @@ def expand_window(
     tau: float,
     mode: str = "fixed",
     anchor_mode: str = "embedding",
+    refine_mode: str = "none",
 ) -> Tuple[float, float]:
     """
     Expand from anchor_idx left and right while similarity >= tau.
@@ -233,7 +237,6 @@ def expand_window(
                     best_window = [index_start, index_end]
 
         return best_window[0], best_window[1], best_score
-
     else:
         raise ValueError(f"Invalid mode: {mode}")
 
@@ -261,15 +264,46 @@ def expand_window(
         right += 1
         segment_embeddings.append(embedding)
 
-    segment_embeddings = np.stack(segment_embeddings, axis=0)
-    similarity_between_segments = np.dot(segment_embeddings, segment_embeddings.T)
+    if refine_mode == "none":
+        pass
+    elif refine_mode == "agglomerative_clustering":
+        segment_embeddings_in_window = precomputed_embeddings[left : right + 1]
+        n_segments_in_window = len(segment_embeddings_in_window)
 
-    # Only use the non-diagonal elements of the similarity matrix
-    similarity_between_segments = similarity_between_segments[
-        ~np.eye(len(similarity_between_segments), dtype=bool)
-    ]
+        anchor_relative_idx = anchor_idx - left
 
-    mean_similarity_between_segments = np.mean(similarity_between_segments, axis=0)
+        if n_segments_in_window >= 2:
+            connectivity_graph = diags(
+                [1, 1], [-1, 1], shape=(n_segments_in_window, n_segments_in_window)
+            )
+
+            model = AgglomerativeClustering(
+                n_clusters=2,
+                connectivity=connectivity_graph,
+                linkage="ward",
+            )
+            model.fit(segment_embeddings_in_window)
+            final_labels = model.labels_
+
+            anchor_label = final_labels[anchor_relative_idx]
+
+            indices_in_cluster = np.where(final_labels == anchor_label)[0]
+
+            window_start_idx = np.min(indices_in_cluster)
+            window_end_idx = np.max(indices_in_cluster)
+
+            original_left = left
+            
+            left = original_left + window_start_idx
+            right = original_left + window_end_idx
+    else:
+        raise ValueError(f"Invalid refine mode: {refine_mode}")
+
+    # segment_embeddings = segment_embeddings_in_window
+    segment_embeddings = precomputed_embeddings[left : right + 1]
+    similarity_matrix = np.dot(segment_embeddings, segment_embeddings.T)
+    triu_indices = np.triu_indices_from(similarity_matrix, k=1)
+    mean_similarity_between_segments = np.mean(similarity_matrix[triu_indices])
 
     return (
         math.floor(flattened_metadata[left]["timestamps"][0]),
@@ -396,6 +430,7 @@ def _process_one_video(payload: Tuple[str, List[Tuple]], preprocess_captions: Ca
                 args["tau"],
                 args["mode"],
                 args["anchor_mode"],
+                args["refine_mode"],
             )
         except ValueError as e:
             print(f"Error resolving anchor index for video {video_id}: {e}")
@@ -445,7 +480,7 @@ def main(args):
 
     wandb.init(
         project="Thesis",
-        name=f"Threshold {args.tau} - Embeddings Number {args.embeddings_to_include} - Temperature {args.temperature} - Mode {args.mode} - Fn {args.preprocess_function} - Aggregation {args.aggregation_mode} - Anchor Mode {args.anchor_mode}",
+        name=f"Threshold {args.tau} - Embeddings Number {args.embeddings_to_include} - Temperature {args.temperature} - Mode {args.mode} - Fn {args.preprocess_function} - Aggregation {args.aggregation_mode} - Anchor Mode {args.anchor_mode} - Refine Mode {args.refine_mode}",
         config={**args.__dict__},
         group=f"Similarity Based Timestamp Shifting - {args.embedding_model}",
     )
@@ -500,6 +535,7 @@ def main(args):
         "mode": args.mode,
         "aggregation_mode": args.aggregation_mode,
         "anchor_mode": args.anchor_mode,
+        "refine_mode": args.refine_mode,
     }
 
     items = list(video_groups.items())
@@ -552,7 +588,7 @@ def main(args):
     output_file = (
         Path(args.output_path)
         / args.embedding_model
-        / f"ego4d_train_temperature_{args.temperature}_threshold_{args.tau}_embeddings_{args.embeddings_to_include}_mode_{args.mode}_aggregation_{args.aggregation_mode}_anchor_mode_{args.anchor_mode}_{args.postfix}.pkl"
+        / f"ego4d_train_temperature_{args.temperature}_threshold_{args.tau}_embeddings_{args.embeddings_to_include}_mode_{args.mode}_aggregation_{args.aggregation_mode}_anchor_mode_{args.anchor_mode}_{args.postfix}_refine_mode_{args.refine_mode}.pkl"
     )
     with open(output_file, "wb") as f:
         pickle.dump(results, f)
@@ -707,6 +743,13 @@ if __name__ == "__main__":
         default="ground_truth",
         choices=["ground_truth", "captions"],
         help="Mode to use for the anchor embedding",
+    )
+    parser.add_argument(
+        "--refine-mode",
+        type=str,
+        default="none",
+        choices=["none", "agglomerative_clustering"],
+        help="Mode to use for refining the window",
     )
     parser.add_argument(
         "--postfix",

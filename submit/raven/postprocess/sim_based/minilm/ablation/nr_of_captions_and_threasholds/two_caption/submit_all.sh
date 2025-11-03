@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Taus should start from 0.15 and end at 0.95. Define it in a loop or smth, not hardcoded.
-taus=($(seq 0.15 0.01 0.95))
+taus=($(seq 0.15 0.02 0.95))
 numbers_of_segments=(2)
 
 # Base log directory

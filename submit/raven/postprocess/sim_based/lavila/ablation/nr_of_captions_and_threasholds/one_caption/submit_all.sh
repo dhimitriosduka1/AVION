@@ -18,6 +18,6 @@ for tau in "${taus[@]}"; do
       -o "${log_stem}_%A_%a_%x_%j_%N.out" \
       -e "${log_stem}_%A_%a_%x_%j_%N.err" \
       --export=ALL,TAU="${tau}",NUM_SEGMENTS="${num_segments}" \
-      /u/dduka/work/projects/Thesis/AVION/submit/raven/postprocess/sim_based/minilm/ablation/nr_of_captions_and_threasholds/one_caption/script.sbatch
+      /u/dduka/work/projects/Thesis/AVION/submit/raven/postprocess/sim_based/lavila/ablation/nr_of_captions_and_threasholds/one_caption/script.sbatch
   done
 done
