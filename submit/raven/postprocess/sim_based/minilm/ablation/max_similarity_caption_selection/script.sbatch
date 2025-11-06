@@ -18,13 +18,12 @@ conda activate avion
 cd /u/dduka/work/projects/Thesis/AVION
 export PYTHONPATH=.:third_party/decord/python/
 
-python3 -m second_party.postprocess.region_proposal_expansion \
+python3 -m second_party.postprocess.max_similarity_caption_selection \
     --dataset /ptmp/dduka/databases/ego4d/ego4d_train.pkl \
     --ego4d-embeddings-path /ptmp/dduka/databases/ego4d/embeddings/original_ds/sentence-transformers-all-MiniLM-L6-v2/preprocess_caption_v2/ \
     --lavila-embeddings-path /ptmp/dduka/databases/ego4d/embeddings/lavila_narrator/0.7/preprocess_caption_v2/sentence-transformers-all-MiniLM-L6-v2/ \
     --chunk-metadata-root /ptmp/dduka/databases/ego4d/video_320px_15sec/lavila_captions_num_frames_4/temperature_0.7 \
     --embedding-model "sentence-transformers-all-MiniLM-L6-v2" \
-    --temperature 0.7 \
     --tau "${TAU}" \
     --output-path /ptmp/dduka/databases/ego4d/rewritten_timestamps/similarity_based/preprocess_caption_v2/ \
     --num-workers 70 \

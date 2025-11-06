@@ -1,20 +1,18 @@
 #!/bin/bash -l
 
-#SBATCH -o /ptmp/dduka/work/logs/avion/lavila_pretrain_baseline_de_%A_%a_%x_%j_%N.out
-#SBATCH -e /ptmp/dduka/work/logs/avion/lavila_pretrain_baseline_de_%A_%a_%x_%j_%N.err
+#SBATCH -o /ptmp/dduka/work/logs/avion/pretrained_checkpoint_evaluation_%A_%a_%x_%j_%N.out
+#SBATCH -e /ptmp/dduka/work/logs/avion/pretrained_checkpoint_evaluation_%A_%a_%x_%j_%N.err
 
-#SBATCH --job-name dual_encoder_pretrain_baseline_8_gpus
+#SBATCH --job-name pretrained_checkpoint_evaluation
 
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 
-#SBATCH --gres=gpu:1
-#SBATCH --mem=120000
+#SBATCH --gres=gpu:2
 #SBATCH --constraint="gpu"
+#SBATCH --mem=240000
 
-#SBATCH --time=01:59:59
-#SBATCH --wait-all-nodes=1
-
+#SBATCH --time=00:59:59
 
 module purge
 module load anaconda/3/2023.03
@@ -26,7 +24,7 @@ export MASTER_PORT=$((12000 + $RANDOM % 20000))
 export MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 
 # GPU visibility and CUDA settings
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=0,1
 
 # Debug: Print GPU and node information
 echo "Job running on nodes: $SLURM_JOB_NODELIST"
@@ -35,7 +33,7 @@ echo "GPUs per node: $SLURM_GPUS_ON_NODE"
 
 cd /u/dduka/work/projects/Thesis/AVION
 
-RUN_NAME=DUAL_ENCODER_PRETRAIN_BASELINE_256
+RUN_NAME=PRETRAINED_CHECKPOINT_EVALUATION_DUAL_ENCODER___aassda
 EXP_PATH=/ptmp/dduka/work/training_metadata/avion/$RUN_NAME
 
 mkdir -p $EXP_PATH
@@ -43,13 +41,14 @@ mkdir -p $EXP_PATH
 export PYTHONPATH=.:third_party/decord/python/
     
 srun --cpu_bind=v --accel-bind=gn torchrun \
-    --nproc_per_node=1 \
+    --nproc_per_node=2 \
     --nnodes=$SLURM_NNODES \
     --node_rank=$SLURM_NODEID \
     --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
     --rdzv_backend=c10d \
     scripts/main_lavila_pretrain.py \
-    --train-metadata /ptmp/dduka/databases/ego4d/ego4d_train.pkl \
+    --train-metadata /ptmp/dduka/databases/ego4d/ego4d_train.rephraser.no_punkt_top3.pkl \
+    --train-metadata-aux /ptmp/dduka/databases/ego4d/ego4d_train.narrator_63690737.return_10.pkl \
     --use-flash-attn \
     --grad-checkpointing \
     --use-fast-conv1 \
@@ -59,4 +58,5 @@ srun --cpu_bind=v --accel-bind=gn torchrun \
     --fix-lr \
     --output-dir $EXP_PATH \
     --wandb-run-name $RUN_NAME \
-    --evaluate
+    --resume /u/dduka/work/projects/Thesis/AVION/checkpoints/avion_pretrain_lavila_vitb_best.pt \
+    --evaluate \

@@ -425,7 +425,7 @@ def main(args):
     else:
         # auto-resume from latest checkpoint in output directory
         # this is where the model by default resumes from
-        latest = os.path.join(args.output_dir, "checkpoint.pt")
+        latest = os.path.join(args.output_dir, "checkpoint_best.pt")
         if os.path.isfile(latest):
             print("=> loading latest checkpoint '{}'".format(latest))
             latest_checkpoint = torch.load(latest, map_location="cpu")
@@ -722,17 +722,17 @@ def main(args):
             egtea_val_loader, egtea_labels, model, tokenizer
         )
 
-        egomcq_mAP = validate_mcq(egomcq_val_loader, model)
+        # egomcq_mAP = validate_mcq(egomcq_val_loader, model)
 
-        val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
+        # val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
 
         if dist_utils.is_main_process():
             zsh_results = {
                 "test_charades_ego_mAP": charades_ego_mAP,
                 "test_egtea_mean_class_accuracy": egtea_mean_class_acc,
                 "test_egtea_top_1_accuracy": egtea_top1_acc,
-                "test_egomcq_mAP": egomcq_mAP,
-                **{f"test_{k}": v for k, v in val_stats.items()},
+                # "test_egomcq_mAP": egomcq_mAP,
+                # **{f"test_{k}": v for k, v in val_stats.items()},
             }
             wandb.log(data=zsh_results, step=wandb.run.step)
 
@@ -807,7 +807,7 @@ def main(args):
             egtea_val_loader, egtea_labels, model, tokenizer
         )
 
-        egomcq_mAP = validate_mcq(egomcq_val_loader, model)
+        # egomcq_mAP = validate_mcq(egomcq_val_loader, model)
 
         val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
 
@@ -816,7 +816,7 @@ def main(args):
                 "test_charades_ego_mAP": charades_ego_mAP,
                 "test_egtea_mean_class_accuracy": egtea_mean_class_acc,
                 "test_egtea_top_1_accuracy": egtea_top1_acc,
-                "test_egomcq_mAP": egomcq_mAP,
+                # "test_egomcq_mAP": egomcq_mAP,
                 **{f"test_{k}": v for k, v in val_stats.items()},
             }
             wandb.log(data=zsh_results, step=wandb.run.step)
