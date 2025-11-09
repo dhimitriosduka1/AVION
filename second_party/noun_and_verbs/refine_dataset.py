@@ -1,6 +1,15 @@
+import math
 import pickle
 import argparse
 from collections import defaultdict
+from tqdm import tqdm
+import wandb
+
+import numpy as np
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 
 def parse_args():
@@ -9,12 +18,12 @@ def parse_args():
     )
     parser.add_argument(
         "--gt",
-        default="/BS/dduka/work/projects/AVION/ego4d_train.pkl",
+        default="/BS/dduka/work/projects/AVION/ego4d_train_enriched.pkl",
         help="Path to ground-truth pickle (e.g., ego4d_train.pkl)",
     )
     parser.add_argument(
         "--pseudolabels",
-        default="/BS/dduka/work/projects/AVION/ego4d_train.uncovered_all.narrator_63690737.return_5.pkl",
+        default="/BS/dduka/work/projects/AVION/ego4d_train_uncovered_all.narrator_63690737.return_5_enriched_and_filtered.pkl",
         help="Path to pseudo-label pickle",
     )
     parser.add_argument(
@@ -25,6 +34,7 @@ def parse_args():
     parser.add_argument(
         "--gap",
         default=1.5,
+        type=float,
         help="Gap between ground-truth and pseudo-label segments",
     )
     return parser.parse_args()
@@ -66,7 +76,7 @@ def _group_videos_by_video_id(data):
 
 def _merge_data(ground_truth_data, pseudo_labels_data):
     merged_data = defaultdict(list)
-    for video_id, video_data in pseudo_labels_data.items():
+    for video_id, video_data in tqdm(pseudo_labels_data.items(), desc="Merging data"):
         gt_segments = ground_truth_data[video_id]
         pseudo_segments = video_data
         if video_id not in merged_data:
@@ -122,6 +132,16 @@ def _has_overlap(
     return has_noun_overlap and has_verb_overlap
 
 
+def _flatten(lst):
+    result = []
+    for item in lst:
+        if isinstance(item, list):
+            result.extend(_flatten(item))
+        else:
+            result.append(item)
+    return result
+
+
 def _expand_clip(
     merged_data,
     video_id,
@@ -138,24 +158,24 @@ def _expand_clip(
     idx = _resolve_idx(gt_start, gt_end, all_video_segments)
 
     # Convert to set for easier processing
-    gt_noun_vec = set(gt_noun_vec)
-    gt_verb_vec = set(gt_verb_vec)
-    gt_noun_vec_lemmas = set(gt_noun_vec_lemmas)
-    gt_verb_vec_lemmas = set(gt_verb_vec_lemmas)
+    gt_noun_vec = set(_flatten(gt_noun_vec))
+    gt_verb_vec = set(_flatten(gt_verb_vec))
+    gt_noun_vec_lemmas = set(_flatten(gt_noun_vec_lemmas))
+    gt_verb_vec_lemmas = set(_flatten(gt_verb_vec_lemmas))
 
     start_idx = idx
     while start_idx - 1 >= 0:
         prev_segment = all_video_segments[start_idx - 1]
         current_segment = all_video_segments[start_idx]
 
-        gap_duration = current_segment[1] - prev_segment[2]
+        gap_duration = math.fabs(float(current_segment[1]) - float(prev_segment[2]))
         if gap_duration > gap:
             break
 
-        candidate_noun_vec = set(prev_segment[3])
-        candidate_verb_vec = set(prev_segment[4])
-        candidate_noun_vec_lemmas = set(prev_segment[5])
-        candidate_verb_vec_lemmas = set(prev_segment[6])
+        candidate_noun_vec = set(_flatten(prev_segment[4]))
+        candidate_verb_vec = set(_flatten(prev_segment[5]))
+        candidate_noun_vec_lemmas = set(_flatten(prev_segment[6]))
+        candidate_verb_vec_lemmas = set(_flatten(prev_segment[7]))
 
         if not _has_overlap(
             gt_noun_vec,
@@ -176,14 +196,14 @@ def _expand_clip(
         next_segment = all_video_segments[end_idx + 1]
         current_segment = all_video_segments[end_idx]
 
-        gap_duration = next_segment[1] - current_segment[2]
+        gap_duration = math.fabs(float(next_segment[1]) - float(current_segment[2]))
         if gap_duration > gap:
             break
 
-        candidate_noun_vec = set(next_segment[3])
-        candidate_verb_vec = set(next_segment[4])
-        candidate_noun_vec_lemmas = set(next_segment[5])
-        candidate_verb_vec_lemmas = set(next_segment[6])
+        candidate_noun_vec = set(_flatten(next_segment[4]))
+        candidate_verb_vec = set(_flatten(next_segment[5]))
+        candidate_noun_vec_lemmas = set(_flatten(next_segment[6]))
+        candidate_verb_vec_lemmas = set(_flatten(next_segment[7]))
 
         if not _has_overlap(
             gt_noun_vec,
@@ -203,6 +223,13 @@ def _expand_clip(
 
 
 def main(args):
+    wandb.init(
+        project="Thesis",
+        name=f"Refine Dataset - Gap {args.gap}s",
+        config={**args.__dict__},
+        group=f"Refine Dataset",
+    )
+
     ground_truth_data = load_data(args.gt)
     pseudo_labels_data = load_data(args.pseudolabels)
 
@@ -217,10 +244,10 @@ def main(args):
     pseudo_labels_video_groups = _group_videos_by_video_id(pseudo_labels_data)
 
     # This will only be needed for the index resolution and clip expansion.
-    merged_data = _merge_data(ground_truth_data, pseudo_labels_data)
+    merged_data = _merge_data(ground_truth_video_groups, pseudo_labels_video_groups)
 
     refined_data = []
-    for _, data in ground_truth_video_groups.items():
+    for i, data in tqdm(enumerate(ground_truth_data), desc="Refining data"):
         (
             video_id,
             gt_start,
@@ -247,7 +274,72 @@ def main(args):
 
         refined_data.append((video_id, new_start, new_end, gt_original_caption))
 
-    save_data(f"{args.out_path}/ego4d_train_refined.pkl", refined_data)
+        wandb.log({"progress": i / total})
+
+    save_data(f"{args.out_path}/ego4d_train_refined_gap_{args.gap}.pkl", refined_data)
+
+    # --- Added: Plot & log distributions and summaries (no changes to existing logic above) ---
+    # Old (GT) and new (refined) segment durations
+    old_durations = [
+        float(end) - float(start) for (_, start, end, *_) in ground_truth_data
+    ]
+    new_durations = [float(end) - float(start) for (_, start, end, _) in refined_data]
+
+    old = np.asarray(old_durations, dtype=float)
+    new = np.asarray(new_durations, dtype=float)
+    delta = new - old  # expansion amount
+
+    # Overlapping histogram with log-scaled y-axis
+    fig, ax = plt.subplots(figsize=(9, 6), dpi=150)
+    ax.hist(old, bins=100, alpha=0.6, label="Old")
+    ax.hist(new, bins=100, alpha=0.6, label="New")
+    ax.set_yscale("log")
+    ax.set_xlabel("Segment length (seconds)")
+    ax.set_ylabel("Count (log scale)")
+    ax.set_title(f"Old vs New Segment Length Distribution (gap={args.gap}s)")
+    ax.legend()
+
+    # Log the figure to W&B
+    wandb.log({"plots/length_distribution": wandb.Image(fig)})
+    plt.close(fig)
+
+    # Numeric summaries
+    def safe_std(x):
+        return float(x.std(ddof=1)) if x.size > 1 else 0.0
+
+    summaries = {
+        "counts/total": int(old.size),
+        "changes/num_expanded": int((delta > 0).sum()),
+        "changes/num_unchanged": int((delta == 0).sum()),
+        "old/mean": float(old.mean()),
+        "old/median": float(np.median(old)),
+        "old/std": safe_std(old),
+        "old/min": float(old.min()) if old.size else 0.0,
+        "old/max": float(old.max()) if old.size else 0.0,
+        "old/p25": float(np.percentile(old, 25)) if old.size else 0.0,
+        "old/p75": float(np.percentile(old, 75)) if old.size else 0.0,
+        "new/mean": float(new.mean()),
+        "new/median": float(np.median(new)),
+        "new/std": safe_std(new),
+        "new/min": float(new.min()) if new.size else 0.0,
+        "new/max": float(new.max()) if new.size else 0.0,
+        "new/p25": float(np.percentile(new, 25)) if new.size else 0.0,
+        "new/p75": float(np.percentile(new, 75)) if new.size else 0.0,
+        "delta/mean": float(delta.mean()),
+        "delta/median": float(np.median(delta)),
+        "delta/p95": float(np.percentile(delta, 95)) if delta.size else 0.0,
+    }
+    wandb.log(summaries)
+
+    # Log raw histograms as W&B histograms
+    wandb.log(
+        {
+            "hist/old": wandb.Histogram(old),
+            "hist/new": wandb.Histogram(new),
+            "hist/delta": wandb.Histogram(delta),
+        }
+    )
+    # --- End added section ---
 
 
 if __name__ == "__main__":
