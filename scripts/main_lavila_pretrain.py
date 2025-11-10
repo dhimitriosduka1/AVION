@@ -605,35 +605,35 @@ def main(args):
         label_mapping=egtea_mapping_vn2act,
     )
 
-    # Source: https://github.com/facebookresearch/LaViLa/blob/main/eval_zeroshot.py
-    egomcq_kwargs = dict(
-        dataset="ego4d_mcq",
-        root=args.egomcq_data_dir,
-        metadata_val=f"{args.egomcq_meta_dir}/egomcq.json",
-        num_clips=1,
-        clip_length=4,
-        clip_stride=16,
-        num_crops=1,
-        sparse_sample=False,
-    )
+    # # Source: https://github.com/facebookresearch/LaViLa/blob/main/eval_zeroshot.py
+    # egomcq_kwargs = dict(
+    #     dataset="ego4d_mcq",
+    #     root=args.egomcq_data_dir,
+    #     metadata_val=f"{args.egomcq_meta_dir}/egomcq.json",
+    #     num_clips=1,
+    #     clip_length=4,
+    #     clip_stride=16,
+    #     num_crops=1,
+    #     sparse_sample=False,
+    # )
 
-    egomcq_val_dataset = VideoCaptionDatasetMCQ(
-        egomcq_kwargs["dataset"],
-        egomcq_kwargs["root"],
-        egomcq_kwargs["metadata_val"],
-        transform=get_val_transform(
-            args.model,
-            egomcq_kwargs["num_crops"],
-            crop_size,
-            egomcq_kwargs["clip_length"],
-            egomcq_kwargs["num_clips"],
-        ),
-        is_training=False,
-        tokenizer=tokenizer,
-        clip_length=egomcq_kwargs["clip_length"],
-        clip_stride=egomcq_kwargs["clip_stride"],
-        sparse_sample=egomcq_kwargs["sparse_sample"],
-    )
+    # egomcq_val_dataset = VideoCaptionDatasetMCQ(
+    #     egomcq_kwargs["dataset"],
+    #     egomcq_kwargs["root"],
+    #     egomcq_kwargs["metadata_val"],
+    #     transform=get_val_transform(
+    #         args.model,
+    #         egomcq_kwargs["num_crops"],
+    #         crop_size,
+    #         egomcq_kwargs["clip_length"],
+    #         egomcq_kwargs["num_clips"],
+    #     ),
+    #     is_training=False,
+    #     tokenizer=tokenizer,
+    #     clip_length=egomcq_kwargs["clip_length"],
+    #     clip_stride=egomcq_kwargs["clip_stride"],
+    #     sparse_sample=egomcq_kwargs["sparse_sample"],
+    # )
 
     # after you build val_loader, add/replace this block
     if args.distributed:
@@ -647,13 +647,12 @@ def main(args):
         egtea_val_sampler = torch.utils.data.distributed.DistributedSampler(
             egtea_val_dataset, shuffle=False
         )
-        egomcq_val_sampler = torch.utils.data.distributed.DistributedSampler(
-            egomcq_val_dataset, shuffle=False
-        )
+        # egomcq_val_sampler = torch.utils.data.distributed.DistributedSampler(
+        #     egomcq_val_dataset, shuffle=False
+        # )
     else:
-        train_sampler = val_sampler = charades_ego_val_sampler = egtea_val_sampler = (
-            egomcq_val_sampler
-        ) = None
+        # train_sampler = val_sampler = charades_ego_val_sampler = egtea_val_sampler = egomcq_val_sampler = None
+        train_sampler = val_sampler = charades_ego_val_sampler = egtea_val_sampler = None
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -678,15 +677,15 @@ def main(args):
         drop_last=False,
     )
 
-    egomcq_val_loader = torch.utils.data.DataLoader(
-        egomcq_val_dataset,
-        batch_size=16,
-        shuffle=False,
-        num_workers=args.workers,
-        pin_memory=False,
-        drop_last=False,
-        sampler=egomcq_val_sampler,
-    )
+    # egomcq_val_loader = torch.utils.data.DataLoader(
+    #     egomcq_val_dataset,
+    #     batch_size=16,
+    #     shuffle=False,
+    #     num_workers=args.workers,
+    #     pin_memory=False,
+    #     drop_last=False,
+    #     sampler=egomcq_val_sampler,
+    # )
 
     charades_ego_val_loader = torch.utils.data.DataLoader(
         charades_ego_val_dataset,
@@ -710,7 +709,7 @@ def main(args):
 
     print("len(charades_ego_val_loader) = {}".format(len(charades_ego_val_loader)))
     print("len(egtea_val_loader) = {}".format(len(egtea_val_loader)))
-    print("len(egomcq_val_loader) = {}".format(len(egomcq_val_loader)))
+    # print("len(egomcq_val_loader) = {}".format(len(egomcq_val_loader)))
     print("len(val_loader) = {}".format(len(val_loader)))
 
     if args.evaluate:
@@ -724,7 +723,7 @@ def main(args):
 
         # egomcq_mAP = validate_mcq(egomcq_val_loader, model)
 
-        # val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
+        val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
 
         if dist_utils.is_main_process():
             zsh_results = {
@@ -732,7 +731,7 @@ def main(args):
                 "test_egtea_mean_class_accuracy": egtea_mean_class_acc,
                 "test_egtea_top_1_accuracy": egtea_top1_acc,
                 # "test_egomcq_mAP": egomcq_mAP,
-                # **{f"test_{k}": v for k, v in val_stats.items()},
+                **{f"test_{k}": v for k, v in val_stats.items()},
             }
             wandb.log(data=zsh_results, step=wandb.run.step)
 
@@ -762,7 +761,7 @@ def main(args):
             egtea_val_loader, egtea_labels, model, tokenizer
         )
 
-        egomcq_mAP = validate_mcq(egomcq_val_loader, model)
+        # egomcq_mAP = validate_mcq(egomcq_val_loader, model)
 
         val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
 
@@ -771,7 +770,7 @@ def main(args):
                 "test_charades_ego_mAP": charades_ego_mAP,
                 "test_egtea_mean_class_accuracy": egtea_mean_class_acc,
                 "test_egtea_top_1_accuracy": egtea_top1_acc,
-                "test_egomcq_mAP": egomcq_mAP,
+                # "test_egomcq_mAP": egomcq_mAP,
                 **{f"test_{k}": v for k, v in val_stats.items()},
             }
             wandb.log(data=zsh_results, step=0)
