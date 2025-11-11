@@ -205,7 +205,7 @@ def _compute_scores_and_masks(pls, A, B, gap, use_only, alpha, beta):
     n = len(pls)
     sA = [-float("inf")] * n
     sB = [-float("inf")] * n
-    # Overlap feasibility
+
     def feasible_to_A(i):
         return _has_overlap(
             A["nouns"],
@@ -232,9 +232,7 @@ def _compute_scores_and_masks(pls, A, B, gap, use_only, alpha, beta):
             use_only=use_only,
         )
 
-    # Jaccard scores
     def score_to_A(i):
-        # choose surface sets when non-empty; otherwise lemmas
         An = A["nouns"] if A["nouns"] and pls[i]["nouns"] else A["noun_lemmas"]
         Av = A["verbs"] if A["verbs"] and pls[i]["verbs"] else A["verb_lemmas"]
         Pn = (
@@ -256,7 +254,6 @@ def _compute_scores_and_masks(pls, A, B, gap, use_only, alpha, beta):
         )
         return alpha * _jaccard(Bn, Pn) + beta * _jaccard(Bv, Pv)
 
-    # Chainability masks (contiguity with <= gap)
     # Left side (A): can we grow from A.end through contiguous PLs to index i?
     left_reach = [False] * n
     for i in range(n):
@@ -287,87 +284,140 @@ def _compute_scores_and_masks(pls, A, B, gap, use_only, alpha, beta):
         if right_reach[i]:
             sB[i] = score_to_B(i)
 
-    # s0 is zero by design
     s0 = [0.0] * n
     return sA, s0, sB
 
 
 def _dp_assign_between(pls, sA, s0, sB, tau_min):
     """
-    Monotone DP with states A, Ø, B:
+    Monotone DP with states A, Ø, B and transitions:
        A -> A or Ø
        Ø -> Ø or B
        B -> B
-    Returns labels in {"A", "0", "B"} (length n).
+    Returns labels in {"A", "0", "B"} of length n.
+    Robust against unreachable states (no None backpointers).
     """
     n = len(pls)
     if n == 0:
         return []
 
-    neg_inf = -1e18
-    dpA = [neg_inf] * n
-    dp0 = [neg_inf] * n
-    dpB = [neg_inf] * n
+    NEG_INF = -1e18
+
+    # Apply threshold: if below tau_min, forbid assignment to that side.
+    sA = [x if (x is not None and x >= tau_min) else NEG_INF for x in sA]
+    sB = [x if (x is not None and x >= tau_min) else NEG_INF for x in sB]
+    s0 = [0.0 if (x is None) else float(x) for x in s0]  # Ø stays 0 by design
+
+    dpA = [NEG_INF] * n
+    dp0 = [NEG_INF] * n
+    dpB = [NEG_INF] * n
+
+    # Backpointers hold the previous state symbol ("A","0","B") or None if unreachable.
     bpA = [None] * n
     bp0 = [None] * n
     bpB = [None] * n
 
-    # apply threshold: if sA/sB < tau_min, treat as impossible (forces Ø)
-    sA_thr = [x if x >= tau_min else -float("inf") for x in sA]
-    sB_thr = [x if x >= tau_min else -float("inf") for x in sB]
+    # ---- Base (i = 0) ----
+    if sA[0] > NEG_INF:
+        dpA[0] = sA[0]
+        bpA[0] = "A"  # start-in-A
 
-    # i = 0
-    dpA[0] = sA_thr[0]
     dp0[0] = s0[0]
-    dpB[0] = sB_thr[0]
+    bp0[0] = "0"  # start-in-Ø
 
+    if sB[0] > NEG_INF:
+        dpB[0] = dp0[0] + sB[0]
+        bpB[0] = "0"
+
+    # ---- Forward (i >= 1) ----
     for i in range(1, n):
         # A -> A
-        candA = dpA[i - 1] + sA_thr[i]
-        dpA[i], bpA[i] = candA, ("A",)
+        if dpA[i - 1] > NEG_INF and sA[i] > NEG_INF:
+            dpA[i] = dpA[i - 1] + sA[i]
+            bpA[i] = "A"
 
-        # Ø best from (A or Ø)
-        if dpA[i - 1] >= dp0[i - 1]:
-            dp0[i], bp0[i] = dpA[i - 1] + s0[i], ("A",)
+        # Ø from best of (A, Ø)
+        prevA = dpA[i - 1]
+        prev0 = dp0[i - 1]
+        if prevA <= NEG_INF and prev0 <= NEG_INF:
+            dp0[i] = NEG_INF
+            bp0[i] = None
         else:
-            dp0[i], bp0[i] = dp0[i - 1] + s0[i], ("0",)
+            if prevA >= prev0:
+                dp0[i] = prevA + s0[i]
+                bp0[i] = "A"
+            else:
+                dp0[i] = prev0 + s0[i]
+                bp0[i] = "0"
 
-        # B best from (Ø or B)
-        if dp0[i - 1] >= dpB[i - 1]:
-            dpB[i], bpB[i] = dp0[i - 1] + sB_thr[i], ("0",)
+        # B from best of (Ø, B)
+        prevB = dpB[i - 1]
+        prev0 = dp0[i - 1]
+        if sB[i] <= NEG_INF or (prevB <= NEG_INF and prev0 <= NEG_INF):
+            dpB[i] = NEG_INF
+            bpB[i] = None
         else:
-            dpB[i], bpB[i] = dpB[i - 1] + sB_thr[i], ("B",)
+            if prev0 >= prevB:
+                dpB[i] = prev0 + sB[i]
+                bpB[i] = "0"
+            else:
+                dpB[i] = prevB + sB[i]
+                bpB[i] = "B"
 
-    # choose terminal state
-    best_last = max(
+    # ---- Choose terminal state ----
+    best_val, state = max(
         (dpA[n - 1], "A"), (dp0[n - 1], "0"), (dpB[n - 1], "B"), key=lambda x: x[0]
-    )[1]
+    )
+    if best_val <= NEG_INF:
+        # Nothing was feasible → everything is Ø
+        return ["0"] * n
 
-    # backtrack
+    # ---- Backtrack robustly ----
     labels = ["0"] * n
-    state = best_last
     i = n - 1
     while i >= 0:
         labels[i] = state
+
         if state == "A":
-            state = "A"  # only from A
+            if bpA[i] is None:
+                state = "0" if (dp0[i] > NEG_INF) else "A"
+            else:
+                state = bpA[i]
             i -= 1
         elif state == "0":
-            # came from A or 0
-            prev = bp0[i][0]
-            state = prev
+            if bp0[i] is None:
+                if i > 0 and dp0[i - 1] > NEG_INF:
+                    state = "0"
+                elif i > 0 and dpA[i - 1] > NEG_INF:
+                    state = "A"
+                else:
+                    state = "0"
+            else:
+                state = bp0[i]
             i -= 1
         else:  # "B"
-            prev = bpB[i][0]  # from 0 or B
-            state = prev
+            if bpB[i] is None:
+                if i > 0 and dpB[i - 1] > NEG_INF:
+                    state = "B"
+                elif i > 0 and dp0[i - 1] > NEG_INF:
+                    state = "0"
+                else:
+                    state = "0"
+            else:
+                state = bpB[i]
             i -= 1
 
-    # enforce monotone A* 0* B* explicitly (safety): find last A, first B
-    lastA = max([idx for idx, lb in enumerate(labels) if lb == "A"], default=-1)
-    firstB = min(
-        [idx for idx, lb in enumerate(labels) if lb == "B"], default=len(labels)
-    )
-    # everything between lastA and firstB that is neither A nor B stays 0 (already is)
+    # Enforce A* 0* B* explicitly (safety)
+    lastA = max([k for k, lb in enumerate(labels) if lb == "A"], default=-1)
+    firstB = min([k for k, lb in enumerate(labels) if lb == "B"], default=n)
+    for k in range(0, lastA + 1):
+        labels[k] = "A"
+    for k in range(firstB, n):
+        labels[k] = "B"
+    for k in range(lastA + 1, firstB):
+        if labels[k] not in ("A", "B"):
+            labels[k] = "0"
+
     return labels
 
 
@@ -376,26 +426,19 @@ def _refine_video(merged_timeline, args):
     Refine all GTs in one video using optimal in-between assignment + one-sided edges.
     Returns dict key=(gt_start, gt_end) -> (new_start, new_end, caption)
     """
-    # extract GT indices
     gt_idxs = [i for i, s in enumerate(merged_timeline) if s["src"] == "gt"]
     if not gt_idxs:
         return {}
 
-    # convenience access
-    def center(seg):
-        return 0.5 * (seg["start"] + seg["end"])
-
-    # Prepare result map initialized with original GTs
     result = {}
     for i in gt_idxs:
         g = merged_timeline[i]
         result[(g["start"], g["end"])] = [g["start"], g["end"], g["caption"]]
 
-    # Handle in-between regions pairwise
+    # Pairwise in-between assignment (no crossing)
     for a_i, b_i in zip(gt_idxs, gt_idxs[1:]):
         A = merged_timeline[a_i]
         B = merged_timeline[b_i]
-        # collect PLs strictly between A and B
         between = [
             s
             for s in merged_timeline
@@ -405,35 +448,37 @@ def _refine_video(merged_timeline, args):
         if not between:
             continue
 
-        # compute scores & masks
         sA, s0, sB = _compute_scores_and_masks(
             between, A, B, args.gap, args.use_only, args.alpha_nouns, args.beta_verbs
         )
-        labels = _dp_assign_between(between, sA, s0, sB, args.tau_min)
 
-        # update A's end (take rightmost B/W A labels)
+        # Optional quick guard if both sides are entirely impossible
+        if all(v <= -1e17 for v in sA) and all(v <= -1e17 for v in sB):
+            labels = ["0"] * len(between)
+        else:
+            labels = _dp_assign_between(between, sA, s0, sB, args.tau_min)
+
+        # Extend A to the right with A-labeled PLs
         a_new_end = result[(A["start"], A["end"])][1]
         for pl, lb in zip(between, labels):
             if lb == "A":
                 a_new_end = max(a_new_end, pl["end"])
         result[(A["start"], A["end"])][1] = a_new_end
 
-        # update B's start (take leftmost among B labels)
+        # Extend B to the left with B-labeled PLs
         b_new_start = result[(B["start"], B["end"])][0]
         for pl, lb in zip(between, labels):
             if lb == "B":
                 b_new_start = min(b_new_start, pl["start"])
         result[(B["start"], B["end"])][0] = b_new_start
 
-    # Left edge: PLs before the first GT (grow left->right to GT0 without crossing)
+    # Left edge: PLs before the first GT
     first_gt = merged_timeline[gt_idxs[0]]
     left_pls = [
         s for s in merged_timeline if s["src"] == "pl" and s["end"] <= first_gt["start"]
     ]
     left_pls.sort(key=lambda x: x["start"])
-    # chainability & overlap to first GT
     if left_pls:
-        # walk from rightmost towards left while contiguous and overlapping
         reach = []
         for i in reversed(range(len(left_pls))):
             seg = left_pls[i]
@@ -468,7 +513,7 @@ def _refine_video(merged_timeline, args):
                 left_pls[i_min]["start"],
             )
 
-    # Right edge: PLs after the last GT (grow rightwards from GTk)
+    # Right edge: PLs after the last GT
     last_gt = merged_timeline[gt_idxs[-1]]
     right_pls = [
         s for s in merged_timeline if s["src"] == "pl" and s["start"] >= last_gt["end"]
@@ -527,7 +572,7 @@ def main(args):
     print(f"Total ground truth segments: {total}")
     print(f"Total pseudo-labels segments: {total_pl}")
 
-    # Group videos by video_id
+    # Group by video_id
     print("Grouping videos by video_id...")
     ground_truth_video_groups = _group_videos_by_video_id(ground_truth_data)
     pseudo_labels_video_groups = _group_videos_by_video_id(pseudo_labels_data)
@@ -564,7 +609,7 @@ def main(args):
 
     save_data(f"{args.out_path}/ego4d_train_refined_gap_{args.gap}.pkl", refined_data)
 
-    # --- Plots & summaries (unchanged) ---
+    # --- Plots & summaries (unchanged from your version) ---
     old_durations = [
         float(end) - float(start) for (_, start, end, *_) in ground_truth_data
     ]
