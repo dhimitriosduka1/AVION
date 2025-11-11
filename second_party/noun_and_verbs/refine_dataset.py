@@ -37,6 +37,12 @@ def parse_args():
         type=float,
         help="Gap between ground-truth and pseudo-label segments",
     )
+    parser.add_argument(
+        "--use-only",
+        default=None,
+        choices=["nouns", "verbs", None],
+        help="Whether to use only nouns or verbs for the overlap check",
+    )
     return parser.parse_args()
 
 
@@ -111,6 +117,7 @@ def _has_overlap(
     cand_verbs,
     cand_noun_lemmas,
     cand_verb_lemmas,
+    use_only=None
 ):
     if not gt_nouns or not cand_nouns:
         nouns_to_check_gt = gt_noun_lemmas
@@ -126,8 +133,17 @@ def _has_overlap(
         verbs_to_check_gt = gt_verbs
         verbs_to_check_cand = cand_verbs
 
-    has_noun_overlap = bool(nouns_to_check_gt & nouns_to_check_cand)
-    has_verb_overlap = bool(verbs_to_check_gt & verbs_to_check_cand)
+    if use_only == None:
+        has_noun_overlap = bool(nouns_to_check_gt & nouns_to_check_cand)
+        has_verb_overlap = bool(verbs_to_check_gt & verbs_to_check_cand)
+    elif use_only == "nouns":
+        has_noun_overlap = bool(nouns_to_check_gt & nouns_to_check_cand)
+        has_verb_overlap = True
+    elif use_only == "verbs":
+        has_noun_overlap = True
+        has_verb_overlap = bool(verbs_to_check_gt & verbs_to_check_cand)
+    else:
+        raise ValueError(f"Invalid use_only: {use_only}")
 
     return has_noun_overlap and has_verb_overlap
 
