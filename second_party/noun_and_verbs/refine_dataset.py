@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Refine GT segments by merging adjacent pseudo-label segments that match taxonomy anchors."
+        description="Refine GT segments by optimally assigning in-between pseudo-labels without crossing GTs."
     )
     parser.add_argument(
         "--gt",
@@ -35,13 +35,26 @@ def parse_args():
         "--gap",
         default=1.5,
         type=float,
-        help="Gap between ground-truth and pseudo-label segments",
+        help="Max allowable gap (seconds) when chaining adjacent segments",
     )
     parser.add_argument(
         "--use-only",
         default=None,
         choices=["nouns", "verbs", None],
         help="Whether to use only nouns or verbs for the overlap check",
+    )
+    # scoring weights (can be left as defaults)
+    parser.add_argument(
+        "--alpha_nouns", type=float, default=1.0, help="Weight for noun Jaccard"
+    )
+    parser.add_argument(
+        "--beta_verbs", type=float, default=1.0, help="Weight for verb Jaccard"
+    )
+    parser.add_argument(
+        "--tau_min",
+        type=float,
+        default=0.0,
+        help="Minimum score to assign to A/B (else goes to Ø)",
     )
     return parser.parse_args()
 
@@ -64,48 +77,31 @@ def save_data(path, data):
 
 def _group_videos_by_video_id(data):
     video_groups = defaultdict(list)
-
     for sample in data:
         video_id = sample[0]
-
-        if video_id not in video_groups:
-            video_groups[video_id] = []
-
         video_groups[video_id].append(sample)
-
-    # Sort samples by start time
     for video_id in video_groups:
-        video_groups[video_id].sort(key=lambda x: x[1])
-
+        video_groups[video_id].sort(key=lambda x: float(x[1]))
     return video_groups
 
 
-def _merge_data(ground_truth_data, pseudo_labels_data):
-    merged_data = defaultdict(list)
-    for video_id, video_data in tqdm(pseudo_labels_data.items(), desc="Merging data"):
-        gt_segments = ground_truth_data[video_id]
-        pseudo_segments = video_data
-        if video_id not in merged_data:
-            merged_data[video_id] = []
-
-        merged_data[video_id].extend((gt_segments + pseudo_segments))
-
-    # Sort the merged data by start time
-    for video_id in merged_data:
-        merged_data[video_id].sort(key=lambda x: x[1])
-
-    return merged_data
+def _flatten(lst):
+    result = []
+    for item in lst:
+        if isinstance(item, list):
+            result.extend(_flatten(item))
+        else:
+            result.append(item)
+    return result
 
 
-def _resolve_idx(gt_start, gt_end, pseudo_labels_data):
-    # Extract the segments from the pseudo-labels data that are within the gap of the ground truth segment
-    pseudo_labels_segments = [(sample[1], sample[2]) for sample in pseudo_labels_data]
-    if (gt_start, gt_end) in pseudo_labels_segments:
-        return pseudo_labels_segments.index((gt_start, gt_end))
-
-    raise ValueError(
-        f"No pseudo-labels segment found for ground truth segment {gt_start} - {gt_end}"
-    )
+def _to_sets(sample):
+    """Return (nouns, verbs, noun_lemmas, verb_lemmas) as sets (may be empty)."""
+    nouns = set(_flatten(sample[4])) if len(sample) > 4 else set()
+    verbs = set(_flatten(sample[5])) if len(sample) > 5 else set()
+    noun_lemmas = set(_flatten(sample[6])) if len(sample) > 6 else set()
+    verb_lemmas = set(_flatten(sample[7])) if len(sample) > 7 else set()
+    return nouns, verbs, noun_lemmas, verb_lemmas
 
 
 def _has_overlap(
@@ -117,8 +113,9 @@ def _has_overlap(
     cand_verbs,
     cand_noun_lemmas,
     cand_verb_lemmas,
-    use_only=None
+    use_only=None,
 ):
+    # Same logic as your original, but works on precomputed sets
     if not gt_nouns or not cand_nouns:
         nouns_to_check_gt = gt_noun_lemmas
         nouns_to_check_cand = cand_noun_lemmas
@@ -133,7 +130,7 @@ def _has_overlap(
         verbs_to_check_gt = gt_verbs
         verbs_to_check_cand = cand_verbs
 
-    if use_only == None:
+    if use_only is None:
         has_noun_overlap = bool(nouns_to_check_gt & nouns_to_check_cand)
         has_verb_overlap = bool(verbs_to_check_gt & verbs_to_check_cand)
     elif use_only == "nouns":
@@ -148,94 +145,370 @@ def _has_overlap(
     return has_noun_overlap and has_verb_overlap
 
 
-def _flatten(lst):
-    result = []
-    for item in lst:
-        if isinstance(item, list):
-            result.extend(_flatten(item))
+def _jaccard(a, b):
+    if not a and not b:
+        return 0.0
+    inter = len(a & b)
+    union = len(a | b)
+    return float(inter) / float(union) if union > 0 else 0.0
+
+
+def _build_tagged_timeline(gt_groups, pl_groups):
+    """
+    Build merged per-video timelines with explicit source tags.
+    Each element is a dict:
+      {video_id, start, end, caption, nouns, verbs, noun_lemmas, verb_lemmas, src}
+    """
+    merged = defaultdict(list)
+    vids = set(gt_groups.keys()) | set(pl_groups.keys())
+    for vid in vids:
+        for s in gt_groups.get(vid, []):
+            nouns, verbs, nlem, vlem = _to_sets(s)
+            merged[vid].append(
+                dict(
+                    video_id=vid,
+                    start=float(s[1]),
+                    end=float(s[2]),
+                    caption=s[3] if len(s) > 3 else None,
+                    nouns=nouns,
+                    verbs=verbs,
+                    noun_lemmas=nlem,
+                    verb_lemmas=vlem,
+                    src="gt",
+                )
+            )
+        for s in pl_groups.get(vid, []):
+            nouns, verbs, nlem, vlem = _to_sets(s)
+            merged[vid].append(
+                dict(
+                    video_id=vid,
+                    start=float(s[1]),
+                    end=float(s[2]),
+                    caption=s[3] if len(s) > 3 else None,
+                    nouns=nouns,
+                    verbs=verbs,
+                    noun_lemmas=nlem,
+                    verb_lemmas=vlem,
+                    src="pl",
+                )
+            )
+        merged[vid].sort(key=lambda x: x["start"])
+    return merged
+
+
+def _compute_scores_and_masks(pls, A, B, gap, use_only, alpha, beta):
+    """
+    For PLs between A and B (sorted), compute:
+      - sA[i], sB[i], s0[i]=0
+      - feasibility masks via left/right chainability with 'gap' and overlap.
+    """
+    n = len(pls)
+    sA = [-float("inf")] * n
+    sB = [-float("inf")] * n
+    # Overlap feasibility
+    def feasible_to_A(i):
+        return _has_overlap(
+            A["nouns"],
+            A["verbs"],
+            A["noun_lemmas"],
+            A["verb_lemmas"],
+            pls[i]["nouns"],
+            pls[i]["verbs"],
+            pls[i]["noun_lemmas"],
+            pls[i]["verb_lemmas"],
+            use_only=use_only,
+        )
+
+    def feasible_to_B(i):
+        return _has_overlap(
+            B["nouns"],
+            B["verbs"],
+            B["noun_lemmas"],
+            B["verb_lemmas"],
+            pls[i]["nouns"],
+            pls[i]["verbs"],
+            pls[i]["noun_lemmas"],
+            pls[i]["verb_lemmas"],
+            use_only=use_only,
+        )
+
+    # Jaccard scores
+    def score_to_A(i):
+        # choose surface sets when non-empty; otherwise lemmas
+        An = A["nouns"] if A["nouns"] and pls[i]["nouns"] else A["noun_lemmas"]
+        Av = A["verbs"] if A["verbs"] and pls[i]["verbs"] else A["verb_lemmas"]
+        Pn = (
+            pls[i]["nouns"] if A["nouns"] and pls[i]["nouns"] else pls[i]["noun_lemmas"]
+        )
+        Pv = (
+            pls[i]["verbs"] if A["verbs"] and pls[i]["verbs"] else pls[i]["verb_lemmas"]
+        )
+        return alpha * _jaccard(An, Pn) + beta * _jaccard(Av, Pv)
+
+    def score_to_B(i):
+        Bn = B["nouns"] if B["nouns"] and pls[i]["nouns"] else B["noun_lemmas"]
+        Bv = B["verbs"] if B["verbs"] and pls[i]["verbs"] else B["verb_lemmas"]
+        Pn = (
+            pls[i]["nouns"] if B["nouns"] and pls[i]["nouns"] else pls[i]["noun_lemmas"]
+        )
+        Pv = (
+            pls[i]["verbs"] if B["verbs"] and pls[i]["verbs"] else pls[i]["verb_lemmas"]
+        )
+        return alpha * _jaccard(Bn, Pn) + beta * _jaccard(Bv, Pv)
+
+    # Chainability masks (contiguity with <= gap)
+    # Left side (A): can we grow from A.end through contiguous PLs to index i?
+    left_reach = [False] * n
+    for i in range(n):
+        if not feasible_to_A(i):
+            left_reach[i] = False
+            continue
+        if i == 0:
+            left_reach[i] = abs(pls[i]["start"] - A["end"]) <= gap
         else:
-            result.append(item)
+            left_reach[i] = left_reach[i - 1] and (
+                abs(pls[i]["start"] - pls[i - 1]["end"]) <= gap
+            )
+        if left_reach[i]:
+            sA[i] = score_to_A(i)
+
+    # Right side (B): can we grow from B.start backwards through contiguous PLs to index i?
+    right_reach = [False] * n
+    for i in reversed(range(n)):
+        if not feasible_to_B(i):
+            right_reach[i] = False
+            continue
+        if i == n - 1:
+            right_reach[i] = abs(B["start"] - pls[i]["end"]) <= gap
+        else:
+            right_reach[i] = right_reach[i + 1] and (
+                abs(pls[i + 1]["start"] - pls[i]["end"]) <= gap
+            )
+        if right_reach[i]:
+            sB[i] = score_to_B(i)
+
+    # s0 is zero by design
+    s0 = [0.0] * n
+    return sA, s0, sB
+
+
+def _dp_assign_between(pls, sA, s0, sB, tau_min):
+    """
+    Monotone DP with states A, Ø, B:
+       A -> A or Ø
+       Ø -> Ø or B
+       B -> B
+    Returns labels in {"A", "0", "B"} (length n).
+    """
+    n = len(pls)
+    if n == 0:
+        return []
+
+    neg_inf = -1e18
+    dpA = [neg_inf] * n
+    dp0 = [neg_inf] * n
+    dpB = [neg_inf] * n
+    bpA = [None] * n
+    bp0 = [None] * n
+    bpB = [None] * n
+
+    # apply threshold: if sA/sB < tau_min, treat as impossible (forces Ø)
+    sA_thr = [x if x >= tau_min else -float("inf") for x in sA]
+    sB_thr = [x if x >= tau_min else -float("inf") for x in sB]
+
+    # i = 0
+    dpA[0] = sA_thr[0]
+    dp0[0] = s0[0]
+    dpB[0] = sB_thr[0]
+
+    for i in range(1, n):
+        # A -> A
+        candA = dpA[i - 1] + sA_thr[i]
+        dpA[i], bpA[i] = candA, ("A",)
+
+        # Ø best from (A or Ø)
+        if dpA[i - 1] >= dp0[i - 1]:
+            dp0[i], bp0[i] = dpA[i - 1] + s0[i], ("A",)
+        else:
+            dp0[i], bp0[i] = dp0[i - 1] + s0[i], ("0",)
+
+        # B best from (Ø or B)
+        if dp0[i - 1] >= dpB[i - 1]:
+            dpB[i], bpB[i] = dp0[i - 1] + sB_thr[i], ("0",)
+        else:
+            dpB[i], bpB[i] = dpB[i - 1] + sB_thr[i], ("B",)
+
+    # choose terminal state
+    best_last = max(
+        (dpA[n - 1], "A"), (dp0[n - 1], "0"), (dpB[n - 1], "B"), key=lambda x: x[0]
+    )[1]
+
+    # backtrack
+    labels = ["0"] * n
+    state = best_last
+    i = n - 1
+    while i >= 0:
+        labels[i] = state
+        if state == "A":
+            state = "A"  # only from A
+            i -= 1
+        elif state == "0":
+            # came from A or 0
+            prev = bp0[i][0]
+            state = prev
+            i -= 1
+        else:  # "B"
+            prev = bpB[i][0]  # from 0 or B
+            state = prev
+            i -= 1
+
+    # enforce monotone A* 0* B* explicitly (safety): find last A, first B
+    lastA = max([idx for idx, lb in enumerate(labels) if lb == "A"], default=-1)
+    firstB = min(
+        [idx for idx, lb in enumerate(labels) if lb == "B"], default=len(labels)
+    )
+    # everything between lastA and firstB that is neither A nor B stays 0 (already is)
+    return labels
+
+
+def _refine_video(merged_timeline, args):
+    """
+    Refine all GTs in one video using optimal in-between assignment + one-sided edges.
+    Returns dict key=(gt_start, gt_end) -> (new_start, new_end, caption)
+    """
+    # extract GT indices
+    gt_idxs = [i for i, s in enumerate(merged_timeline) if s["src"] == "gt"]
+    if not gt_idxs:
+        return {}
+
+    # convenience access
+    def center(seg):
+        return 0.5 * (seg["start"] + seg["end"])
+
+    # Prepare result map initialized with original GTs
+    result = {}
+    for i in gt_idxs:
+        g = merged_timeline[i]
+        result[(g["start"], g["end"])] = [g["start"], g["end"], g["caption"]]
+
+    # Handle in-between regions pairwise
+    for a_i, b_i in zip(gt_idxs, gt_idxs[1:]):
+        A = merged_timeline[a_i]
+        B = merged_timeline[b_i]
+        # collect PLs strictly between A and B
+        between = [
+            s
+            for s in merged_timeline
+            if (s["src"] == "pl" and s["start"] >= A["end"] and s["end"] <= B["start"])
+        ]
+        between.sort(key=lambda x: x["start"])
+        if not between:
+            continue
+
+        # compute scores & masks
+        sA, s0, sB = _compute_scores_and_masks(
+            between, A, B, args.gap, args.use_only, args.alpha_nouns, args.beta_verbs
+        )
+        labels = _dp_assign_between(between, sA, s0, sB, args.tau_min)
+
+        # update A's end (take rightmost B/W A labels)
+        a_new_end = result[(A["start"], A["end"])][1]
+        for pl, lb in zip(between, labels):
+            if lb == "A":
+                a_new_end = max(a_new_end, pl["end"])
+        result[(A["start"], A["end"])][1] = a_new_end
+
+        # update B's start (take leftmost among B labels)
+        b_new_start = result[(B["start"], B["end"])][0]
+        for pl, lb in zip(between, labels):
+            if lb == "B":
+                b_new_start = min(b_new_start, pl["start"])
+        result[(B["start"], B["end"])][0] = b_new_start
+
+    # Left edge: PLs before the first GT (grow left->right to GT0 without crossing)
+    first_gt = merged_timeline[gt_idxs[0]]
+    left_pls = [
+        s for s in merged_timeline if s["src"] == "pl" and s["end"] <= first_gt["start"]
+    ]
+    left_pls.sort(key=lambda x: x["start"])
+    # chainability & overlap to first GT
+    if left_pls:
+        # walk from rightmost towards left while contiguous and overlapping
+        reach = []
+        for i in reversed(range(len(left_pls))):
+            seg = left_pls[i]
+            ok_overlap = _has_overlap(
+                first_gt["nouns"],
+                first_gt["verbs"],
+                first_gt["noun_lemmas"],
+                first_gt["verb_lemmas"],
+                seg["nouns"],
+                seg["verbs"],
+                seg["noun_lemmas"],
+                seg["verb_lemmas"],
+                use_only=args.use_only,
+            )
+            if not ok_overlap:
+                break
+            if not reach:
+                if abs(first_gt["start"] - seg["end"]) <= args.gap:
+                    reach.append(i)
+                else:
+                    break
+            else:
+                prev_i = reach[-1]
+                if abs(left_pls[prev_i]["start"] - seg["end"]) <= args.gap:
+                    reach.append(i)
+                else:
+                    break
+        if reach:
+            i_min = min(reach)
+            result[(first_gt["start"], first_gt["end"])][0] = min(
+                result[(first_gt["start"], first_gt["end"])][0],
+                left_pls[i_min]["start"],
+            )
+
+    # Right edge: PLs after the last GT (grow rightwards from GTk)
+    last_gt = merged_timeline[gt_idxs[-1]]
+    right_pls = [
+        s for s in merged_timeline if s["src"] == "pl" and s["start"] >= last_gt["end"]
+    ]
+    right_pls.sort(key=lambda x: x["start"])
+    if right_pls:
+        reach = []
+        for i in range(len(right_pls)):
+            seg = right_pls[i]
+            ok_overlap = _has_overlap(
+                last_gt["nouns"],
+                last_gt["verbs"],
+                last_gt["noun_lemmas"],
+                last_gt["verb_lemmas"],
+                seg["nouns"],
+                seg["verbs"],
+                seg["noun_lemmas"],
+                seg["verb_lemmas"],
+                use_only=args.use_only,
+            )
+            if not ok_overlap:
+                break
+            if not reach:
+                if abs(seg["start"] - last_gt["end"]) <= args.gap:
+                    reach.append(i)
+                else:
+                    break
+            else:
+                prev_i = reach[-1]
+                if abs(seg["start"] - right_pls[prev_i]["end"]) <= args.gap:
+                    reach.append(i)
+                else:
+                    break
+        if reach:
+            i_max = max(reach)
+            result[(last_gt["start"], last_gt["end"])][1] = max(
+                result[(last_gt["start"], last_gt["end"])][1], right_pls[i_max]["end"]
+            )
+
     return result
-
-
-def _expand_clip(
-    merged_data,
-    video_id,
-    gt_start,
-    gt_end,
-    gt_noun_vec,
-    gt_verb_vec,
-    gt_noun_vec_lemmas,
-    gt_verb_vec_lemmas,
-    gap,
-):
-    # Resolve the idx of the ground truth segment in the merged data
-    all_video_segments = merged_data[video_id]
-    idx = _resolve_idx(gt_start, gt_end, all_video_segments)
-
-    # Convert to set for easier processing
-    gt_noun_vec = set(_flatten(gt_noun_vec))
-    gt_verb_vec = set(_flatten(gt_verb_vec))
-    gt_noun_vec_lemmas = set(_flatten(gt_noun_vec_lemmas))
-    gt_verb_vec_lemmas = set(_flatten(gt_verb_vec_lemmas))
-
-    start_idx = idx
-    while start_idx - 1 >= 0:
-        prev_segment = all_video_segments[start_idx - 1]
-        current_segment = all_video_segments[start_idx]
-
-        gap_duration = math.fabs(float(current_segment[1]) - float(prev_segment[2]))
-        if gap_duration > gap:
-            break
-
-        candidate_noun_vec = set(_flatten(prev_segment[4]))
-        candidate_verb_vec = set(_flatten(prev_segment[5]))
-        candidate_noun_vec_lemmas = set(_flatten(prev_segment[6]))
-        candidate_verb_vec_lemmas = set(_flatten(prev_segment[7]))
-
-        if not _has_overlap(
-            gt_noun_vec,
-            gt_verb_vec,
-            gt_noun_vec_lemmas,
-            gt_verb_vec_lemmas,
-            candidate_noun_vec,
-            candidate_verb_vec,
-            candidate_noun_vec_lemmas,
-            candidate_verb_vec_lemmas,
-        ):
-            break
-
-        start_idx -= 1
-
-    end_idx = start_idx
-    while end_idx + 1 < len(all_video_segments):
-        next_segment = all_video_segments[end_idx + 1]
-        current_segment = all_video_segments[end_idx]
-
-        gap_duration = math.fabs(float(next_segment[1]) - float(current_segment[2]))
-        if gap_duration > gap:
-            break
-
-        candidate_noun_vec = set(_flatten(next_segment[4]))
-        candidate_verb_vec = set(_flatten(next_segment[5]))
-        candidate_noun_vec_lemmas = set(_flatten(next_segment[6]))
-        candidate_verb_vec_lemmas = set(_flatten(next_segment[7]))
-
-        if not _has_overlap(
-            gt_noun_vec,
-            gt_verb_vec,
-            gt_noun_vec_lemmas,
-            gt_verb_vec_lemmas,
-            candidate_noun_vec,
-            candidate_verb_vec,
-            candidate_noun_vec_lemmas,
-            candidate_verb_vec_lemmas,
-        ):
-            break
-
-        end_idx += 1
-
-    return all_video_segments[start_idx][1], all_video_segments[end_idx][2]
 
 
 def main(args):
@@ -259,43 +532,39 @@ def main(args):
     ground_truth_video_groups = _group_videos_by_video_id(ground_truth_data)
     pseudo_labels_video_groups = _group_videos_by_video_id(pseudo_labels_data)
 
-    # This will only be needed for the index resolution and clip expansion.
-    merged_data = _merge_data(ground_truth_video_groups, pseudo_labels_video_groups)
+    # Build tagged merged timelines
+    merged = _build_tagged_timeline(
+        ground_truth_video_groups, pseudo_labels_video_groups
+    )
 
+    # Refine per video using optimal assignments (no GT crossing)
+    refined_map = {}  # (video_id, gt_start, gt_end) -> (new_start, new_end, caption)
+    for vid, timeline in tqdm(merged.items(), desc="Refining per video"):
+        vid_result = _refine_video(timeline, args)
+        for (gt_start, gt_end), (new_s, new_e, cap) in vid_result.items():
+            refined_map[(vid, gt_start, gt_end)] = (new_s, new_e, cap)
+
+    # Emit refined_data in original GT order
     refined_data = []
-    for i, data in tqdm(enumerate(ground_truth_data), desc="Refining data"):
-        (
-            video_id,
-            gt_start,
-            gt_end,
-            gt_original_caption,
-            gt_noun_vec,
-            gt_verb_vec,
-            gt_noun_vec_lemmas,
-            gt_verb_vec_lemmas,
-        ) = data
-
-        # Resolve the idx of the ground truth segment in the pseudo-labels data
-        new_start, new_end = _expand_clip(
-            merged_data,
-            video_id,
-            gt_start,
-            gt_end,
-            gt_noun_vec,
-            gt_verb_vec,
-            gt_noun_vec_lemmas,
-            gt_verb_vec_lemmas,
-            args.gap,
-        )
-
-        refined_data.append((video_id, new_start, new_end, gt_original_caption))
-
-        wandb.log({"progress": i / total})
+    for (
+        video_id,
+        gt_start,
+        gt_end,
+        gt_original_caption,
+        *_extras,
+    ) in ground_truth_data:
+        key = (video_id, float(gt_start), float(gt_end))
+        if key in refined_map:
+            new_start, new_end, _cap = refined_map[key]
+            refined_data.append((video_id, new_start, new_end, gt_original_caption))
+        else:
+            refined_data.append(
+                (video_id, float(gt_start), float(gt_end), gt_original_caption)
+            )
 
     save_data(f"{args.out_path}/ego4d_train_refined_gap_{args.gap}.pkl", refined_data)
 
-    # --- Added: Plot & log distributions and summaries (no changes to existing logic above) ---
-    # Old (GT) and new (refined) segment durations
+    # --- Plots & summaries (unchanged) ---
     old_durations = [
         float(end) - float(start) for (_, start, end, *_) in ground_truth_data
     ]
@@ -303,9 +572,8 @@ def main(args):
 
     old = np.asarray(old_durations, dtype=float)
     new = np.asarray(new_durations, dtype=float)
-    delta = new - old  # expansion amount
+    delta = new - old
 
-    # Overlapping histogram with log-scaled y-axis
     fig, ax = plt.subplots(figsize=(9, 6), dpi=150)
     ax.hist(old, bins=100, alpha=0.6, label="Old")
     ax.hist(new, bins=100, alpha=0.6, label="New")
@@ -314,12 +582,9 @@ def main(args):
     ax.set_ylabel("Count (log scale)")
     ax.set_title(f"Old vs New Segment Length Distribution (gap={args.gap}s)")
     ax.legend()
-
-    # Log the figure to W&B
     wandb.log({"plots/length_distribution": wandb.Image(fig)})
     plt.close(fig)
 
-    # Numeric summaries
     def safe_std(x):
         return float(x.std(ddof=1)) if x.size > 1 else 0.0
 
@@ -346,8 +611,6 @@ def main(args):
         "delta/p95": float(np.percentile(delta, 95)) if delta.size else 0.0,
     }
     wandb.log(summaries)
-
-    # Log raw histograms as W&B histograms
     wandb.log(
         {
             "hist/old": wandb.Histogram(old),
@@ -355,7 +618,6 @@ def main(args):
             "hist/delta": wandb.Histogram(delta),
         }
     )
-    # --- End added section ---
 
 
 if __name__ == "__main__":
