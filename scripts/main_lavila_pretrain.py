@@ -99,7 +99,7 @@ def get_args_parser():
         "--no-fused-decode-crop", action="store_false", dest="fused_decode_crop"
     )
     parser.set_defaults(fused_decode_crop=False)
-    parser.add_argument("--decode-threads", default=1, type=int)
+    parser.add_argument("--decode-threads", default=10, type=int)
     # model
     parser.add_argument("--model", default="CLIP_VITB16", type=str)
     parser.add_argument(
@@ -196,7 +196,7 @@ def get_args_parser():
     parser.add_argument(
         "-j",
         "--workers",
-        default=8,
+        default=10,
         type=int,
         metavar="N",
         help="number of data loading workers per process",
@@ -660,9 +660,11 @@ def main(args):
         shuffle=(train_sampler is None),
         collate_fn=None,
         num_workers=args.workers,
-        pin_memory=False,
+        pin_memory=True,
         sampler=train_sampler,
         drop_last=True,
+        prefetch_factor=2,
+        persistent_workers=True,
     )
 
     print("len(train_loader) = {}".format(len(train_loader)))
@@ -994,7 +996,7 @@ def train(
         if optim_iter % args.print_freq == 0:
             progress.display(optim_iter)
 
-        if dist_utils.is_main_process():
+        if dist_utils.is_main_process() and it % args.print_freq == 0:
             wandb.log(
                 data={
                     "loss": loss.item(),

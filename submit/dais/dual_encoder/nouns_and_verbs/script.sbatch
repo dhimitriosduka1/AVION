@@ -1,16 +1,15 @@
 #!/bin/bash -l
 
-#SBATCH -o /dais/fs/scratch/dduka/logs/avion/4_gpu_nouns_and_verbs_gap_%A_%a_%x_%j_%N.out
-#SBATCH -e /dais/fs/scratch/dduka/logs/avion/4_gpu_nouns_and_verbs_gap_%A_%a_%x_%j_%N.err
+#SBATCH -o /dais/fs/scratch/dduka/logs/avion/nouns_and_verbs_gap_v2_%A_%a_%x_%j_%N.out
+#SBATCH -e /dais/fs/scratch/dduka/logs/avion/nouns_and_verbs_gap_v2_%A_%a_%x_%j_%N.err
 
-#SBATCH -J 4_gpu_nouns_and_verbs_gap
+#SBATCH -J nouns_and_verbs_gap_v2
 
 #SBATCH --time=23:59:59
 
 #SBATCH --nodes=1
 #SBATCH --partition="gpu1"
 #SBATCH --cpus-per-task=48
-#SBATCH --threads-per-core=1
 
 #SBATCH --gres=gpu:h200:4
 #SBATCH --ntasks-per-node=1
@@ -35,7 +34,7 @@ echo "GPUs per node: $SLURM_GPUS_ON_NODE"
 
 cd /u/dduka/project/AVION
 
-RUN_NAME=DUAL_ENCODER_NOUNS_AND_VERBS_${GAP}_4GPU
+RUN_NAME=DUAL_ENCODER_NOUNS_AND_VERBS_${GAP}_4GPU_v2
 EXP_PATH=/dais/fs/scratch/dduka/training_metadata/avion/$RUN_NAME
 
 mkdir -p $EXP_PATH
@@ -49,7 +48,7 @@ srun --cpu_bind=v --accel-bind=gn torchrun \
     --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
     --rdzv_backend=c10d \
     scripts/main_lavila_pretrain.py \
-    --train-metadata /dais/fs/scratch/dduka/databases/ego4d/nouns_and_verbs/ego4d_train_refined_gap_${GAP}.pkl \
+    --train-metadata /dais/fs/scratch/dduka/databases/ego4d/nouns_and_verbs/v2/ego4d_train_refined_gap_${GAP}.pkl \
     --use-flash-attn \
     --grad-checkpointing \
     --use-fast-conv1 \
