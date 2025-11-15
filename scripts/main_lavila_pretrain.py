@@ -201,6 +201,12 @@ def get_args_parser():
         metavar="N",
         help="number of data loading workers per process",
     )
+    parser.add_argument(
+        "--prefetch-factor",
+        default=4,
+        type=int,
+        help="number of samples loaded in advance by each worker",
+    )
     parser.add_argument("--evaluate", action="store_true", help="eval only")
     parser.add_argument(
         "--world-size",
@@ -663,7 +669,7 @@ def main(args):
         pin_memory=True,
         sampler=train_sampler,
         drop_last=True,
-        prefetch_factor=2,
+        prefetch_factor=args.prefetch_factor,
         persistent_workers=True,
     )
 
