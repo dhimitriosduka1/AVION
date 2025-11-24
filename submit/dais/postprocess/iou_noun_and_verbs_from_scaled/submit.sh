@@ -42,7 +42,7 @@ cd /u/dduka/project/AVION
 export PYTHONPATH=.:third_party/decord/python/
 
 python3 /u/dduka/project/AVION/second_party/iou_noun_and_verbs/main.py \
-    --dataset /dais/fs/scratch/dduka/databases/ego4d/random_shift/ego4d_train_random_shift_1.4_1.4_1.0_42_enriched.pkl \
+    --dataset /dais/fs/scratch/dduka/databases/ego4d/random_shift/ego4d_train_random_shift_2.1_2.1_1.0_42_enriched.pkl \
     --min-iou ${IoU} \
-    --postfix "From Scaled 1.4" \
+    --postfix "From Scaled 2.1" \
     --out-path /dais/fs/scratch/dduka/databases/ego4d/iou_noun_and_verbs_from_scaled/

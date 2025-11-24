@@ -6,20 +6,6 @@ import wandb
 import plotly.express as px
 
 
-def plot_distribution(values, title, xlabel="Length (seconds)", ylabel="Frequency"):
-    fig, ax = plt.subplots(figsize=(10, 6))
-
-    plt.hist(values, bins=100)
-    ax.set_title(title)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.set_yscale("log")
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-
-    return fig
-
-
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Refine GT segments by merging with pseudo-labels based on IoU"

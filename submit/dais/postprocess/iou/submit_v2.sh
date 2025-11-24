@@ -1,8 +1,8 @@
 #!/bin/bash -l
-#SBATCH -o /dais/fs/scratch/dduka/logs/avion/iou_s_%A_%a_%x_%j_%N.out
-#SBATCH -e /dais/fs/scratch/dduka/logs/avion/iou_s_%A_%a_%x_%j_%N.err
+#SBATCH -o /dais/fs/scratch/dduka/logs/avion/iou_%A_%a_%x_%j_%N.out
+#SBATCH -e /dais/fs/scratch/dduka/logs/avion/iou_%A_%a_%x_%j_%N.err
 
-#SBATCH -J iou_s
+#SBATCH -J iou
 #SBATCH --time=00:59:59
 
 #SBATCH --nodes=1
@@ -14,7 +14,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=250000
 
-#SBATCH --array=0-5
+#SBATCH --array=0-3
 
 set -euo pipefail
 
@@ -23,8 +23,8 @@ micromamba activate avion_fa2
 
 nvidia-smi
 
-IoUs=(0.005 0.01 0.015 0.02 0.025 0.03)
-IoU="${IoUs[$SLURM_ARRAY_TASK_ID]}"
+MIN_HYBRID_SCORES=(0.1 0.15 0.2 0.25)
+MIN_HYBRID_SCORE="${MIN_HYBRID_SCORES[$SLURM_ARRAY_TASK_ID]}"
 
 # Set up distributed training environment variables
 export MASTER_PORT=$((12000 + RANDOM % 20000))
@@ -36,13 +36,8 @@ export CUDA_VISIBLE_DEVICES=0
 echo "Job running on nodes: $SLURM_JOB_NODELIST"
 echo "Total nodes: ${SLURM_NNODES:-1}"
 echo "GPUs per node: ${SLURM_GPUS_ON_NODE:-unknown}"
-echo "Array task ID: $SLURM_ARRAY_TASK_ID  -> OFFSET: $IoU"
 
 cd /u/dduka/project/AVION
 export PYTHONPATH=.:third_party/decord/python/
 
-python3 /u/dduka/project/AVION/second_party/iou/main.py \
-    --dataset /dais/fs/scratch/dduka/databases/ego4d/random_shift/ego4d_train_random_shift_2.1_2.1_1.0_42_enriched.pkl \
-    --min-iou ${IoU} \
-    --postfix "From Scaled 2.1" \
-    --out-path /dais/fs/scratch/dduka/databases/ego4d/iou_from_scaled/
+python3 /u/dduka/project/AVION/second_party/iou/main_v2.py --min-hybrid-score ${MIN_HYBRID_SCORE}
