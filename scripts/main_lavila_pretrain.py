@@ -35,7 +35,7 @@ load_dotenv()
 
 import wandb
 from tqdm import tqdm
-
+from transformers import AutoVideoProcessor
 
 def get_args_parser():
     parser = argparse.ArgumentParser(description="AVION pretrain", add_help=False)
@@ -272,7 +272,7 @@ def main(args):
 
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[args.gpu], bucket_cap_mb=200
+            model, device_ids=[args.gpu], bucket_cap_mb=200, find_unused_parameters=True
         )
 
     criterion = ClipLoss(
@@ -393,6 +393,11 @@ def main(args):
     torch.backends.cudnn.benchmark = True
 
     tokenizer = partial(tokenize, context_length=args.context_length)
+
+    if args.model.startswith("V_JEPA_2"):
+        print(f"Setting norm_style to timm for {args.model}")
+        args.norm_style = "timm"
+
     if args.norm_style == "openai":
         mean, std = [108.3272985, 116.7460125, 104.09373615000001], [
             68.5005327,
@@ -408,7 +413,13 @@ def main(args):
     else:
         raise ValueError('--norm-style should be in ["openai", "timm"]!')
 
-    crop_size = 336 if args.model.endswith("_336PX") else 224
+    if args.model.startswith("V_JEPA_2"):
+        processor = AutoVideoProcessor.from_pretrained(args.model)
+        crop_size = processor.crop_size['height']
+        resize_size = processor.size['shortest_edge']
+    else:
+        crop_size = 336 if args.model.endswith("_336PX") else 224
+        resize_size = crop_size
 
     if args.fused_decode_crop:
         base_train_transform_ls = [
@@ -430,7 +441,7 @@ def main(args):
         gpu_train_transform_ls = []
         base_val_transform_ls = [
             Permute([3, 0, 1, 2]),
-            torchvision.transforms.Resize(crop_size),
+            torchvision.transforms.Resize(resize_size),
             torchvision.transforms.CenterCrop(crop_size),
             transforms_video.NormalizeVideo(mean=mean, std=std),
         ]
