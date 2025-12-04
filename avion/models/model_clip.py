@@ -11,6 +11,8 @@ from avion.models.utils import (
     remap_keys_from_open_clip_to_vit,
 )
 
+from transformers import AutoModel
+
 
 class VideoClassifier(nn.Module):
     def __init__(
@@ -338,4 +340,104 @@ def CLIP_VITL14_336PX(
         print("unexpected_keys: ", unexpected_keys)
     else:
         raise NotImplementedError
+    return model
+
+
+class VJEPAAdapter(nn.Module):
+    def __init__(self, vjepa_model):
+        super().__init__()
+        self.model = vjepa_model
+
+    def forward(self, x):
+        # x input shape: (B, C, T, H, W)
+        # HF V-JEPA expects: (B, T, C, H, W)
+        x = x.permute(0, 2, 1, 3, 4)
+
+        # Forward pass
+        # Note: If your V-JEPA model requires pixel_values explicitly, use:
+        # outputs = self.model(pixel_values=x)
+        outputs = self.model(x)
+
+        # Get Last Hidden State: (B, Sequence_Length, Hidden_Dim)
+        features = outputs.last_hidden_state
+
+        # Global Average Pooling (GAP)
+        # Averages over the sequence dimension (T * H * W patches)
+        # Result: (B, Hidden_Dim)
+        return features.mean(dim=1)
+
+
+def VJEPA2_VITL256(
+    freeze_backbone=False,
+    freeze_temperature=False,
+    context_length=77,
+    vocab_size=49408,
+    project_embed_dim=512,
+    vision_width=1024,
+    use_bidirectional_lm=False,
+    **kwargs,
+):
+    vjepa_model = AutoModel.from_pretrained("facebook/vjepa2-vitl-fpc64-256")
+
+    if hasattr(vjepa_model, "gradient_checkpointing_enable"):
+        print("=> Enabling Non-Reentrant Gradient Checkpointing for V-JEPA")
+        vjepa_model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+        )
+    else:
+        print(
+            "Warning: V-JEPA model does not support native gradient checkpointing enable."
+        )
+
+    if freeze_backbone:
+        print("=> Mode: Linear Probing (Backbone Frozen)")
+        for param in vjepa_model.parameters():
+            param.requires_grad = False
+    else:
+        print("=> Mode: Full Fine-Tuning (Backbone Unfrozen)")
+        for param in vjepa_model.parameters():
+            param.requires_grad = True
+
+    vision_model = VJEPAAdapter(vjepa_model)
+
+    text_model = TextTransformer(
+        context_length=context_length,
+        vocab_size=vocab_size,
+        width=768,
+        heads=12,
+        layers=12,
+        output_dim=project_embed_dim,
+        causal_mask=not use_bidirectional_lm,
+    )
+
+    if use_grad_checkpointing:
+        enable_grad_checkpointing(text_model, use_grad_checkpointing)
+
+    model = CLIP(
+        embed_dim=project_embed_dim,
+        vision_model=vision_model,
+        text_model=text_model,
+        vision_width=vision_width,
+        text_width=None,
+        freeze_temperature=freeze_temperature,
+    )
+
+    if pretrain_zoo == "openai":
+        print("=> Loading OpenAI CLIP Text weights (ViT-L/14)")
+        try:
+            clip_model, _ = clip.load("ViT-L/14", device="cpu")
+            remapped_state_dict = remap_keys_from_open_clip_to_vit(
+                clip_model.state_dict(),
+                use_fast_conv1=kwargs.get("use_fast_conv1", False),
+                use_flash_attn=kwargs.get("use_flash_attn", False),
+            )
+
+            text_dict = {
+                k: v for k, v in remapped_state_dict.items() if "visual" not in k
+            }
+
+            model.load_state_dict(text_dict, strict=False)
+        except Exception as e:
+            print(f"Warning: Could not load OpenAI text weights: {e}")
+
     return model
