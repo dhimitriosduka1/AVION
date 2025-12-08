@@ -132,4 +132,5 @@ def generate_label_map(dataset):
 
 if __name__ == "__main__":
     for dataset in ["ek100_cls", "charades_ego", "egtea"]:
-        labels = generate_label_map(dataset)
+        labels, mapping_vn2act = generate_label_map(dataset)
+        print(f"{dataset}: #labels={len(labels)}")

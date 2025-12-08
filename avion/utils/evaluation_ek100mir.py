@@ -4,7 +4,14 @@
 # `https://github.com/mwray/Joint-Part-of-Speech-Embeddings/tree/main/src/evaluation/mAP.py`
 # Modified by Yue Zhao
 
+import time
+import torch
 import numpy as np
+import pandas as pd
+import torch.cuda.amp as amp
+
+from collections import OrderedDict
+from avion.utils.meters import AverageMeter, ProgressMeter
 
 
 def calculate_DCG(similarity_matrix, relevancy_matrix, k_counts):
@@ -98,7 +105,9 @@ def calculate_IDCG(relevancy_matrix, k_counts):
     return calculate_DCG(relevancy_matrix, relevancy_matrix, k_counts)
 
 
-def calculate_nDCG(similarity_matrix, relevancy_matrix, k_counts=None, IDCG=None, reduction='mean'):
+def calculate_nDCG(
+    similarity_matrix, relevancy_matrix, k_counts=None, IDCG=None, reduction="mean"
+):
     """
     Calculates the normalised Discounted Cumulative Gain (nDCG) between two
     modalities for the first modality using the Discounted Cumulative Gain
@@ -134,7 +143,7 @@ def calculate_nDCG(similarity_matrix, relevancy_matrix, k_counts=None, IDCG=None
     DCG = calculate_DCG(similarity_matrix, relevancy_matrix, k_counts)
     if IDCG is None:
         IDCG = calculate_IDCG(relevancy_matrix, k_counts)
-    if reduction == 'mean':
+    if reduction == "mean":
         return np.mean(DCG / IDCG)
     elif reduction is None:
         return DCG / IDCG
@@ -161,7 +170,9 @@ def calculate_mAP(sim_mat, relevancy_matrix):
     ranked_order = (-sim_mat).argsort()
     ranked_sim_mat = sim_mat[np.arange(sim_mat.shape[0])[:, None], ranked_order]
     # re-order the relevancy matrix to accommodate the proposals
-    ranked_rel_mat = relevancy_matrix[np.arange(relevancy_matrix.shape[0])[:, None], ranked_order]
+    ranked_rel_mat = relevancy_matrix[
+        np.arange(relevancy_matrix.shape[0])[:, None], ranked_order
+    ]
 
     # find the number of relevant items found at each k
     cumulative_rel_mat = np.cumsum(ranked_rel_mat, axis=1)
@@ -190,6 +201,132 @@ def get_nDCG(similarity_matrix, rel_matrix):
     txt_k_counts = calculate_k_counts(rel_matrix.T)
     vis_IDCG = calculate_IDCG(rel_matrix, vis_k_counts)
     txt_IDCG = calculate_IDCG(rel_matrix.T, txt_k_counts)
-    vis_nDCG = calculate_nDCG(similarity_matrix, rel_matrix, k_counts=vis_k_counts, IDCG=vis_IDCG)
-    txt_nDCG = calculate_nDCG(similarity_matrix.T, rel_matrix.T, k_counts=txt_k_counts, IDCG=txt_IDCG)
+    vis_nDCG = calculate_nDCG(
+        similarity_matrix, rel_matrix, k_counts=vis_k_counts, IDCG=vis_IDCG
+    )
+    txt_nDCG = calculate_nDCG(
+        similarity_matrix.T, rel_matrix.T, k_counts=txt_k_counts, IDCG=txt_IDCG
+    )
     return vis_nDCG, txt_nDCG, (vis_nDCG + txt_nDCG) / 2
+
+
+# Helper method to perform the validation
+def validate_mir(val_loader, transform_gpu, model, criterion, args):
+    batch_time = AverageMeter("Time", ":6.2f")
+    data_time = AverageMeter("Data", ":6.2f")
+    mem = AverageMeter("Mem (GB)", ":6.1f")
+    metric_names = ["loss", "clip_acc"]
+    iters_per_epoch = len(val_loader) // args.update_freq
+    metrics = OrderedDict([(name, AverageMeter(name, ":.2e")) for name in metric_names])
+    progress = ProgressMeter(
+        iters_per_epoch,
+        [batch_time, data_time, mem, *metrics.values()],
+        prefix="Test: ",
+    )
+
+    model.eval()
+
+    all_video_embed = [[] for _ in range(args.world_size)]
+    all_text_embed = [[] for _ in range(args.world_size)]
+    total_num = 0
+    with amp.autocast(enabled=not args.disable_amp):
+        with torch.no_grad():
+            end = time.time()
+            for i, inputs in enumerate(val_loader):
+                # measure data loading time
+                data_time.update(time.time() - end)
+
+                inputs = [tensor.cuda(args.gpu, non_blocking=True) for tensor in inputs]
+                _ = (
+                    inputs.pop()
+                )  # loader will a "relevancy" variable which is not needed except ek100_mir
+
+                # compute output
+                if args.fused_decode_crop and len(transform_gpu) > 0:
+                    inputs[0] = inputs[0].permute(0, 4, 1, 2, 3)
+                    inputs[0] = transform_gpu(inputs[0])
+                image_features, text_features, logit_scale = model(*inputs)
+                gathered_image_features = [
+                    torch.zeros_like(image_features) for _ in range(args.world_size)
+                ]
+                gathered_text_features = [
+                    torch.zeros_like(text_features) for _ in range(args.world_size)
+                ]
+                torch.distributed.all_gather(gathered_image_features, image_features)
+                torch.distributed.all_gather(gathered_text_features, text_features)
+                for j in range(args.world_size):
+                    all_video_embed[j].append(gathered_image_features[j].detach().cpu())
+                    all_text_embed[j].append(gathered_text_features[j].detach().cpu())
+                loss_dict = criterion(image_features, text_features, logit_scale)
+
+                for k in loss_dict:
+                    metrics[k].update(loss_dict[k].item(), args.batch_size)
+
+                total_num += image_features.shape[0] * args.world_size
+
+                # measure elapsed time
+                batch_time.update(time.time() - end)
+                end = time.time()
+
+                mem.update(torch.cuda.max_memory_allocated() // 1e9)
+
+                if i % args.print_freq == 0:
+                    progress.display(i)
+    progress.synchronize()
+
+    for j in range(args.world_size):
+        all_video_embed[j] = torch.cat(all_video_embed[j], dim=0).numpy()
+        all_text_embed[j] = torch.cat(all_text_embed[j], dim=0).numpy()
+
+    all_text_embed_reorg, all_video_embed_reorg = [], []
+    for i in range(total_num):
+        all_video_embed_reorg.append(
+            all_video_embed[i % args.world_size][i // args.world_size]
+        )
+        all_text_embed_reorg.append(
+            all_text_embed[i % args.world_size][i // args.world_size]
+        )
+
+    all_text_embed = np.vstack(all_text_embed_reorg)
+    all_video_embed = np.vstack(all_video_embed_reorg)
+
+    all_text_embed = all_text_embed[:9668, :]
+    all_video_embed = all_video_embed[:9668, :]
+
+    similarity_matrix = np.matmul(all_video_embed, all_text_embed.T)
+    similarity_matrix = (similarity_matrix + 1) / 2
+
+    video_id = pd.read_csv(args.val_metadata).values[:, 0]
+    text_id = pd.read_csv(args.val_metadata.replace("test", "test_sentence")).values[
+        :, 0
+    ]
+    indexes = [video_id.tolist().index(elem) for elem in text_id]
+
+    similarity_matrix = similarity_matrix[:, indexes]
+
+    print(similarity_matrix.shape)
+
+    rel_matrix = pd.read_pickle(args.relevancy_path)
+    vis_map, txt_map, avg_map = get_mAP(similarity_matrix, rel_matrix)
+
+    print(
+        "mAP: V->T: {:.3f} T->V: {:.3f} AVG: {:.3f}".format(vis_map, txt_map, avg_map)
+    )
+
+    vis_nDCG, txt_nDCG, avg_nDCG = get_nDCG(similarity_matrix, rel_matrix)
+
+    print(
+        "nDCG: V->T: {:.3f} T->V: {:.3f} AVG: {:.3f}".format(
+            vis_nDCG, txt_nDCG, avg_nDCG
+        )
+    )
+
+    return {
+        **{k: v.avg for k, v in metrics.items()},
+        "vis_map": vis_map,
+        "txt_map": txt_map,
+        "avg_map": avg_map,
+        "vis_ndcg": vis_nDCG,
+        "txt_ndcg": txt_nDCG,
+        "avg_ndcg": avg_nDCG,
+    }
