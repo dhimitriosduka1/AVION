@@ -1,7 +1,12 @@
+import os
 import csv
 import math
 import sys
 import torch
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 def check_loss_nan(loss):
@@ -72,8 +77,8 @@ def generate_label_map(dataset):
         vn_list = []
         mapping_vn2narration = {}
         for f in [
-            "datasets/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv",
-            "datasets/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv",
+            f"{os.environ.get('EK100_META_DIR')}/epic-kitchens-100-annotations/EPIC_100_train.csv",
+            f"{os.environ.get('EK100_META_DIR')}/epic-kitchens-100-annotations/EPIC_100_validation.csv",
         ]:
             csv_reader = csv.reader(open(f))
             _ = next(csv_reader)  # skip the header
@@ -99,7 +104,9 @@ def generate_label_map(dataset):
         print("=> preprocessing charades_ego action label space")
         vn_list = []
         labels = []
-        with open("datasets/CharadesEgo/CharadesEgo/Charades_v1_classes.txt") as f:
+        with open(
+            f"{os.environ.get('CHARADES_META_DIR')}/Charades_v1_classes.txt"
+        ) as f:
             csv_reader = csv.reader(f)
             for row in csv_reader:
                 vn = row[0][:4]
@@ -111,14 +118,18 @@ def generate_label_map(dataset):
     elif dataset == "egtea":
         print("=> preprocessing egtea action label space")
         labels = []
-        with open("datasets/EGTEA/action_idx.txt") as f:
+        with open(f"{os.environ.get('EGTEA_META_DIR')}/action_idx.txt") as f:
             for row in f:
                 row = row.strip()
                 narration = " ".join(row.split(" ")[:-1])
                 labels.append(narration.replace("_", " ").lower())
-                # labels.append(narration)
         mapping_vn2act = {label: i for i, label in enumerate(labels)}
         print(len(labels), labels[:5])
     else:
         raise NotImplementedError
     return labels, mapping_vn2act
+
+
+if __name__ == "__main__":
+    for dataset in ["ek100_cls", "charades_ego", "egtea"]:
+        labels = generate_label_map(dataset)
