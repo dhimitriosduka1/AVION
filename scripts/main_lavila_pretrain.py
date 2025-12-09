@@ -1,7 +1,6 @@
 import argparse
 from collections import OrderedDict
 from functools import partial
-import pandas as pd
 import os
 import time
 
@@ -20,21 +19,21 @@ from avion.losses.losses import ClipLoss
 import avion.models.model_clip as model_clip
 from avion.optim.schedulers import cosine_scheduler
 import avion.utils.distributed as dist_utils
-from avion.utils.evaluation_ek100mir import validate_mir
 
 import avion.utils.evaluation_ek100cls as eval_ek100cls
 import avion.utils.evaluation_egtea as eval_egtea
 import avion.utils.evaluation_charades as eval_charades
 import avion.utils.evaluation_egomcq as eval_egomcq
+from avion.utils.validate import validate_all
 from avion.utils.meters import AverageMeter, ProgressMeter
 from avion.utils.misc import check_loss_nan
 
 # Additional imports
+import wandb
+
 from dotenv import load_dotenv
 
 load_dotenv()
-
-import wandb
 
 
 def get_args_parser():
@@ -637,7 +636,7 @@ def main(args):
 
     egomcq_val_loader = torch.utils.data.DataLoader(
         egomcq_val_dataset,
-        batch_size=4,
+        batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.workers,
         pin_memory=True,
@@ -647,58 +646,19 @@ def main(args):
 
     print("len(egomcq_val_loader) = {}".format(len(egomcq_val_loader)))
 
+    val_loaders = {
+        "ego4d_mir": ek100_mir_val_loader,
+        "ego4d_cls": (ek100_cls_val_loader, ek100_cls_labels),
+        "egtea": (egtea_val_loader, egtea_labels),
+        "charades": (charades_val_loader, charades_labels),
+        "ego4d_mcq": egomcq_val_loader,
+    }
+
     if args.evaluate:
-        ek100_mir_val_results = validate_mir(
-            ek100_mir_val_loader, val_transform_gpu, model, criterion, args
+        val_result, _ = validate_all(
+            model, criterion, tokenizer, val_transform_gpu, args, val_loaders
         )
-
-        ek100_cls_val_results = eval_ek100cls.validate_zeroshot(
-            val_loader=ek100_cls_val_loader,
-            use_template=True,
-            labels=ek100_cls_labels,
-            model=model,
-            tokenizer=tokenizer,
-            disable_amp=args.disable_amp,
-            fused_decode_crop=args.fused_decode_crop,
-            transform_gpu=val_transform_gpu,
-        )
-
-        egtea_val_results = eval_egtea.validate_zeroshot(
-            val_loader=egtea_val_loader,
-            use_template=True,
-            labels=egtea_labels,
-            model=model,
-            tokenizer=tokenizer,
-            disable_amp=args.disable_amp,
-            fused_decode_crop=args.fused_decode_crop,
-            transform_gpu=val_transform_gpu,
-        )
-
-        charades_val_results = eval_charades.validate_zeroshot(
-            val_loader=charades_val_loader,
-            use_template=True,
-            labels=charades_labels,
-            model=model,
-            tokenizer=tokenizer,
-            disable_amp=args.disable_amp,
-            fused_decode_crop=args.fused_decode_crop,
-            transform_gpu=val_transform_gpu,
-        )
-
-        egomcq_val_results = eval_egomcq.validate_zeroshot(
-            val_loader=egomcq_val_loader,
-            model=model,
-            fused_decode_crop=args.fused_decode_crop,
-            transform_gpu=val_transform_gpu,
-            disable_amp=args.disable_amp,
-        )
-
-        print(f"ek100_mir_val_results: {ek100_mir_val_results}")
-        print(f"ek100_cls_val_results: {ek100_cls_val_results}")
-        print(f"egtea_val_results: {egtea_val_results}")
-        print(f"charades_val_results: {charades_val_results}")
-        print(f"egomcq_val_results: {egomcq_val_results}")
-
+        print(f"Validation Results: {val_result}")
         return
 
     if args.fix_lr:
@@ -717,66 +677,14 @@ def main(args):
 
     # Perform zsh only if the start_epoch is 0
     if args.start_epoch == 0:
-        ek100_mir_val_results = validate_mir(
-            ek100_mir_val_loader, val_transform_gpu, model, criterion, args
+        val_result, formatted = validate_all(
+            model, criterion, tokenizer, val_transform_gpu, args, val_loaders
         )
 
-        ek100_cls_val_results = eval_ek100cls.validate_zeroshot(
-            val_loader=ek100_cls_val_loader,
-            use_template=True,
-            labels=ek100_cls_labels,
-            model=model,
-            tokenizer=tokenizer,
-            disable_amp=args.disable_amp,
-            fused_decode_crop=args.fused_decode_crop,
-            transform_gpu=val_transform_gpu,
-        )
-
-        egtea_val_results = eval_egtea.validate_zeroshot(
-            val_loader=egtea_val_loader,
-            use_template=True,
-            labels=egtea_labels,
-            model=model,
-            tokenizer=tokenizer,
-            disable_amp=args.disable_amp,
-            fused_decode_crop=args.fused_decode_crop,
-            transform_gpu=val_transform_gpu,
-        )
-
-        charades_val_results = eval_charades.validate_zeroshot(
-            val_loader=charades_val_loader,
-            use_template=True,
-            labels=charades_labels,
-            model=model,
-            tokenizer=tokenizer,
-            disable_amp=args.disable_amp,
-            fused_decode_crop=args.fused_decode_crop,
-            transform_gpu=val_transform_gpu,
-        )
-
-        egomcq_val_results = eval_egomcq.validate_zeroshot(
-            val_loader=egomcq_val_loader,
-            model=model,
-            fused_decode_crop=args.fused_decode_crop,
-            transform_gpu=val_transform_gpu,
-            disable_amp=args.disable_amp,
-        )
-
-        print(f"ek100_mir_val_results: {ek100_mir_val_results}")
-        print(f"ek100_cls_val_results: {ek100_cls_val_results}")
-        print(f"egtea_val_results: {egtea_val_results}")
-        print(f"charades_val_results: {charades_val_results}")
-        print(f"egomcq_val_results: {egomcq_val_results}")
-
+        print(f"Zero-shot Results before training: {val_result}")
         if dist_utils.is_main_process():
             wandb.log(
-                data={
-                    **{f"test_{k}": v for k, v in ek100_mir_val_results.items()},
-                    **{f"test_{k}": v for k, v in ek100_cls_val_results.items()},
-                    **{f"test_{k}": v for k, v in egtea_val_results.items()},
-                    **{f"test_{k}": v for k, v in charades_val_results.items()},
-                    **{f"test_{k}": v for k, v in egomcq_val_results.items()},
-                },
+                data=formatted,
                 step=0,
             )
 
@@ -802,52 +710,11 @@ def main(args):
         if (epoch + 1) % args.eval_freq != 0:
             continue
 
-        ek100_mir_val_results = validate_mir(
-            ek100_mir_val_loader, val_transform_gpu, model, criterion, args
+        val_result, formatted = validate_all(
+            model, criterion, tokenizer, val_transform_gpu, args, val_loaders
         )
 
-        ek100_cls_val_results = eval_ek100cls.validate_zeroshot(
-            val_loader=ek100_cls_val_loader,
-            use_template=True,
-            labels=ek100_cls_labels,
-            model=model,
-            tokenizer=tokenizer,
-            disable_amp=args.disable_amp,
-            fused_decode_crop=args.fused_decode_crop,
-            transform_gpu=val_transform_gpu,
-        )
-
-        egtea_val_results = eval_egtea.validate_zeroshot(
-            val_loader=egtea_val_loader,
-            use_template=True,
-            labels=egtea_labels,
-            model=model,
-            tokenizer=tokenizer,
-            disable_amp=args.disable_amp,
-            fused_decode_crop=args.fused_decode_crop,
-            transform_gpu=val_transform_gpu,
-        )
-
-        charades_val_results = eval_charades.validate_zeroshot(
-            val_loader=charades_val_loader,
-            use_template=True,
-            labels=charades_labels,
-            model=model,
-            tokenizer=tokenizer,
-            disable_amp=args.disable_amp,
-            fused_decode_crop=args.fused_decode_crop,
-            transform_gpu=val_transform_gpu,
-        )
-
-        egomcq_val_results = eval_egomcq.validate_zeroshot(
-            val_loader=egomcq_val_loader,
-            model=model,
-            fused_decode_crop=args.fused_decode_crop,
-            transform_gpu=val_transform_gpu,
-            disable_amp=args.disable_amp,
-        )
-
-        acc1 = ek100_mir_val_results["avg_map"]
+        acc1 = val_result["ego4d_mir"]["avg_map"]
 
         is_best = acc1 > best_acc1
         best_acc1 = max(acc1, best_acc1)
@@ -874,13 +741,7 @@ def main(args):
 
         if dist_utils.is_main_process():
             wandb.log(
-                data={
-                    **{f"test_{k}": v for k, v in ek100_mir_val_results.items()},
-                    **{f"test_{k}": v for k, v in ek100_cls_val_results.items()},
-                    **{f"test_{k}": v for k, v in egtea_val_results.items()},
-                    **{f"test_{k}": v for k, v in charades_val_results.items()},
-                    **{f"test_{k}": v for k, v in egomcq_val_results.items()},
-                },
+                data=formatted,
                 step=wandb.run.step,
             )
 
