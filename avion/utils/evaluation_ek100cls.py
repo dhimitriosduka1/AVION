@@ -3,11 +3,10 @@
 
 import os
 import numpy as np
-import pandas as pd
 
 from avion.utils.evaluation_common import validate_zeroshot_cls, accuracy
 from avion.utils.misc import generate_label_map
-from avion.data.clip_dataset import VideoClassyDataset, VideoCaptionDatasetCLIP
+from avion.data.clip_dataset import VideoClassyDataset
 
 
 def get_marginal_indexes(actions, mode):
@@ -47,7 +46,6 @@ def get_mean_accuracy(cm):
 
 
 def get_val_dataset(
-    metadata,
     transform,
     video_chunk_length,
     clip_length,
@@ -64,7 +62,7 @@ def get_val_dataset(
             dataset="ek100_cls",
             root=f"{os.environ.get('EK100_META_DIR')}/video_320p_15sec",
             transform=transform,
-            metadata=metadata,
+            metadata=os.environ.get("VAL_METADATA"),
             is_training=False,
             label_mapping=mapping_vn2act,
             num_clips=num_clips,
@@ -80,7 +78,16 @@ def get_val_dataset(
     )
 
 
-def validate_zeroshot(val_loader, use_template, labels, model, tokenizer, disable_amp, fused_decode_crop, transform_gpu):
+def validate_zeroshot(
+    val_loader,
+    use_template,
+    labels,
+    model,
+    tokenizer,
+    disable_amp,
+    fused_decode_crop,
+    transform_gpu,
+):
     print("=> starting ek100cls zeroshot evaluation")
     preds, targets = validate_zeroshot_cls(
         val_loader=val_loader,

@@ -3,6 +3,7 @@ import csv
 import math
 import sys
 import torch
+import os.path as osp
 
 from dotenv import load_dotenv
 
@@ -118,7 +119,9 @@ def generate_label_map(dataset):
     elif dataset == "egtea":
         print("=> preprocessing egtea action label space")
         labels = []
-        with open(f"{os.environ.get('EGTEA_META_DIR')}/action_idx.txt") as f:
+        with open(
+            f"{osp.dirname(os.environ.get('EGTEA_META_DIR'))}/action_idx.txt"
+        ) as f:
             for row in f:
                 row = row.strip()
                 narration = " ".join(row.split(" ")[:-1])

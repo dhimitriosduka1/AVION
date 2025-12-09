@@ -159,6 +159,27 @@ def video_loader(
         return res
 
 
+def video_loader_by_frames(
+    root, vid, frame_ids, num_threads, fast_rrc, rrc_params, fast_rcc, rcc_params
+):
+    vr = get_video_reader(
+        videoname=osp.join(root, vid),
+        num_threads=num_threads,
+        fast_rrc=fast_rrc,
+        rrc_params=rrc_params,
+        fast_rcc=fast_rcc,
+        rcc_params=rcc_params,
+    )
+    try:
+        frames = vr.get_batch(frame_ids).asnumpy()
+        frames = [torch.tensor(frame, dtype=torch.float32) for frame in frames]
+    except (IndexError, decord.DECORDError) as error:
+        print(error)
+        print("Erroneous video: ", vid)
+        frames = [torch.zeros((240, 320, 3)) for _ in range(len(frame_ids))]
+    return torch.stack(frames, dim=0)
+
+
 class VideoCaptionDatasetBase(torch.utils.data.Dataset):
     def __init__(self, dataset, root, metadata, is_trimmed=True):
         self.dataset = dataset
@@ -232,6 +253,54 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
                         '{} should contain either "train" or "test"!'.format(metadata)
                     )
                 self.relevancy = 0.1
+        elif self.dataset == "egtea":
+            len_dict_path = osp.join(osp.dirname(metadata), "video_len_dict.pkl")
+            if not osp.exists(len_dict_path):
+                print("Generating video length dict...")
+                video_list = glob.glob(osp.join(self.root, "*/*"))
+                len_dict = {
+                    video: len(decord.VideoReader(video)) for video in video_list
+                }
+
+                with open(len_dict_path, "wb") as f:
+                    pickle.dump(len_dict, f)
+
+                print(f"Saved video length dict to {len_dict_path}")
+            else:
+                with open(len_dict_path, "rb") as f:
+                    len_dict = pickle.load(f)
+
+                print(f"Loaded video length dict from {len_dict_path}")
+
+            vn_list, labels = [], []
+            for row in open(osp.join(osp.dirname(metadata), "action_idx.txt")):
+                row = row.strip()
+                vn = int(row.split(" ")[-1])
+                vn_list.append(vn)
+                narration = " ".join(row.split(" ")[:-1])
+                labels.append(narration.replace("_", " ").lower())
+
+            mapping_act2narration = {
+                vn: narration for vn, narration in zip(vn_list, labels)
+            }
+
+            self.samples = []
+            with open(metadata) as f:
+                for row in f:
+                    clip_id, action_idx = row.strip().split(" ")[:2]
+                    video_id = "-".join(clip_id.split("-")[:3])
+                    vid_relpath = osp.join(video_id, "{}.mp4".format(clip_id))
+                    vid_fullpath = osp.join(
+                        self.root, video_id, "{}.mp4".format(clip_id)
+                    )
+                    self.samples.append(
+                        (
+                            vid_relpath,
+                            0,
+                            len_dict[vid_fullpath],
+                            mapping_act2narration[int(action_idx)],
+                        )
+                    )
         else:
             raise NotImplementedError
 
@@ -335,6 +404,85 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
                 jitter=is_training,
             )
             return frames, "{}:{}".format(verb, noun)
+        elif self.dataset == "egtea":
+            vid_path, start_frame, end_frame, sentence = self.samples[i]
+            if is_training:
+                assert num_clips == 1
+                if end_frame < clip_length * clip_stride:
+                    frames = video_loader_by_frames(
+                        self.root,
+                        vid_path,
+                        list(np.arange(0, end_frame)),
+                        threads,
+                        fast_rrc,
+                        rrc_params,
+                        fast_rcc,
+                        rcc_params,
+                    )
+                    zeros = torch.zeros(
+                        (clip_length * clip_stride - end_frame, *frames.shape[1:])
+                    )
+                    frames = torch.cat((frames, zeros), dim=0)
+                    frames = frames[::clip_stride]
+                else:
+                    start_id = np.random.randint(
+                        0, end_frame - clip_length * clip_stride + 1
+                    )
+                    frame_ids = np.arange(
+                        start_id, start_id + clip_length * clip_stride, clip_stride
+                    )
+                    frames = video_loader_by_frames(
+                        self.root,
+                        vid_path,
+                        frame_ids,
+                        threads,
+                        fast_rrc,
+                        rrc_params,
+                        fast_rcc,
+                        rcc_params,
+                    )
+            else:
+                if end_frame < clip_length * clip_stride:
+                    frames = video_loader_by_frames(
+                        self.root,
+                        vid_path,
+                        list(np.arange(0, end_frame)),
+                        threads,
+                        fast_rrc,
+                        rrc_params,
+                        fast_rcc,
+                        rcc_params,
+                    )
+                    zeros = torch.zeros(
+                        (clip_length * clip_stride - end_frame, *frames.shape[1:])
+                    )
+                    frames = torch.cat((frames, zeros), dim=0)
+                    frames = frames[::clip_stride]
+                    frames = frames.repeat(num_clips, 1, 1, 1)
+                else:
+                    frame_ids = []
+                    for start_id in np.linspace(
+                        0, end_frame - clip_length * clip_stride, num_clips, dtype=int
+                    ):
+                        frame_ids.extend(
+                            np.arange(
+                                start_id,
+                                start_id + clip_length * clip_stride,
+                                clip_stride,
+                            )
+                        )
+                    frames = video_loader_by_frames(
+                        self.root,
+                        vid_path,
+                        frame_ids,
+                        threads,
+                        fast_rrc,
+                        rrc_params,
+                        fast_rcc,
+                        rcc_params,
+                    )
+
+            return frames, sentence
         else:
             raise NotImplementedError
 

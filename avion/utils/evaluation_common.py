@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 from torch.cuda import amp
 from tqdm import tqdm
 import avion.utils.distributed as dist_utils
@@ -23,6 +24,17 @@ def accuracy(output, target, topk=(1,)):
             correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
+
+
+def get_mean_accuracy(cm):
+    list_acc = []
+    for i in range(len(cm)):
+        acc = 0
+        if cm[i, :].sum() > 0:
+            acc = cm[i, i] / cm[i, :].sum()
+        list_acc.append(acc)
+
+    return 100 * np.mean(list_acc), 100 * np.trace(cm) / np.sum(cm)
 
 
 def validate_zeroshot_cls(
