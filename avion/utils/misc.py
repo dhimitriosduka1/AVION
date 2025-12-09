@@ -106,7 +106,7 @@ def generate_label_map(dataset):
         vn_list = []
         labels = []
         with open(
-            f"{os.environ.get('CHARADES_META_DIR')}/Charades_v1_classes.txt"
+            f"{osp.dirname(os.environ.get('CHARADES_META_DIR'))}/Charades_v1_classes.txt"
         ) as f:
             csv_reader = csv.reader(f)
             for row in csv_reader:
