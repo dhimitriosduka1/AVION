@@ -25,6 +25,7 @@ from avion.utils.evaluation_ek100mir import validate_mir
 import avion.utils.evaluation_ek100cls as eval_ek100cls
 import avion.utils.evaluation_egtea as eval_egtea
 import avion.utils.evaluation_charades as eval_charades
+import avion.utils.evaluation_egomcq as eval_egomcq
 from avion.utils.meters import AverageMeter, ProgressMeter
 from avion.utils.misc import check_loss_nan
 
@@ -536,6 +537,18 @@ def main(args):
         threads=args.decode_threads,
     )
 
+    egomcq_val_dataset = eval_egomcq.get_val_dataset(
+        transform=val_transform,
+        clip_length=args.clip_length,
+        clip_stride=args.clip_stride,
+        tokenizer=tokenizer,
+        chunk_length=args.video_chunk_length,
+        threads=args.decode_threads,
+        fused_decode_crop=args.fused_decode_crop,
+        crop_size=crop_size,
+        num_clips=args.num_clips,
+    )
+
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
         ek100_mir_val_sampler = torch.utils.data.distributed.DistributedSampler(
@@ -550,12 +563,16 @@ def main(args):
         charades_val_sampler = torch.utils.data.distributed.DistributedSampler(
             charades_val_dataset, shuffle=False
         )
+        egomcq_val_sampler = torch.utils.data.distributed.DistributedSampler(
+            egomcq_val_dataset, shuffle=False
+        )
     else:
         train_sampler = None
         ek100_mir_val_sampler = None
         ek100_cls_val_sampler = None
         egtea_val_sampler = None
         charades_val_sampler = None
+        egomcq_val_sampler = None
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -616,6 +633,20 @@ def main(args):
         drop_last=False,
     )
 
+    print("len(charades_val_loader) = {}".format(len(charades_val_loader)))
+
+    egomcq_val_loader = torch.utils.data.DataLoader(
+        egomcq_val_dataset,
+        batch_size=4,
+        shuffle=False,
+        num_workers=args.workers,
+        pin_memory=True,
+        sampler=egomcq_val_sampler,
+        drop_last=False,
+    )
+
+    print("len(egomcq_val_loader) = {}".format(len(egomcq_val_loader)))
+
     if args.evaluate:
         ek100_mir_val_results = validate_mir(
             ek100_mir_val_loader, val_transform_gpu, model, criterion, args
@@ -654,10 +685,19 @@ def main(args):
             transform_gpu=val_transform_gpu,
         )
 
-        # print(f"ek100_mir_val_results: {ek100_mir_val_results}")
-        # print(f"ek100_cls_val_results: {ek100_cls_val_results}")
-        # print(f"egtea_val_results: {egtea_val_results}")
+        egomcq_val_results = eval_egomcq.validate_zeroshot(
+            val_loader=egomcq_val_loader,
+            model=model,
+            fused_decode_crop=args.fused_decode_crop,
+            transform_gpu=val_transform_gpu,
+            disable_amp=args.disable_amp,
+        )
+
+        print(f"ek100_mir_val_results: {ek100_mir_val_results}")
+        print(f"ek100_cls_val_results: {ek100_cls_val_results}")
+        print(f"egtea_val_results: {egtea_val_results}")
         print(f"charades_val_results: {charades_val_results}")
+        print(f"egomcq_val_results: {egomcq_val_results}")
 
         return
 
@@ -714,10 +754,19 @@ def main(args):
             transform_gpu=val_transform_gpu,
         )
 
+        egomcq_val_results = eval_egomcq.validate_zeroshot(
+            val_loader=egomcq_val_loader,
+            model=model,
+            fused_decode_crop=args.fused_decode_crop,
+            transform_gpu=val_transform_gpu,
+            disable_amp=args.disable_amp,
+        )
+
         print(f"ek100_mir_val_results: {ek100_mir_val_results}")
         print(f"ek100_cls_val_results: {ek100_cls_val_results}")
         print(f"egtea_val_results: {egtea_val_results}")
         print(f"charades_val_results: {charades_val_results}")
+        print(f"egomcq_val_results: {egomcq_val_results}")
 
         if dist_utils.is_main_process():
             wandb.log(
@@ -726,6 +775,7 @@ def main(args):
                     **{f"test_{k}": v for k, v in ek100_cls_val_results.items()},
                     **{f"test_{k}": v for k, v in egtea_val_results.items()},
                     **{f"test_{k}": v for k, v in charades_val_results.items()},
+                    **{f"test_{k}": v for k, v in egomcq_val_results.items()},
                 },
                 step=0,
             )
@@ -789,6 +839,14 @@ def main(args):
             transform_gpu=val_transform_gpu,
         )
 
+        egomcq_val_results = eval_egomcq.validate_zeroshot(
+            val_loader=egomcq_val_loader,
+            model=model,
+            fused_decode_crop=args.fused_decode_crop,
+            transform_gpu=val_transform_gpu,
+            disable_amp=args.disable_amp,
+        )
+
         acc1 = ek100_mir_val_results["avg_map"]
 
         is_best = acc1 > best_acc1
@@ -821,6 +879,7 @@ def main(args):
                     **{f"test_{k}": v for k, v in ek100_cls_val_results.items()},
                     **{f"test_{k}": v for k, v in egtea_val_results.items()},
                     **{f"test_{k}": v for k, v in charades_val_results.items()},
+                    **{f"test_{k}": v for k, v in egomcq_val_results.items()},
                 },
                 step=wandb.run.step,
             )

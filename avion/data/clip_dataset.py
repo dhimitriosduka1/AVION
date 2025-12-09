@@ -6,6 +6,7 @@ import random
 import numpy as np
 import pandas as pd
 import torch
+import json
 
 import decord
 
@@ -112,6 +113,14 @@ def video_loader(
             if not osp.exists(video_filename):
                 print("{} does not exists!".format(video_filename))
                 chunk_end -= chunk_len
+
+                if chunk_end < 0:
+                    print("Erroneous video: ", vid)
+                    placeholder = torch.zeros(
+                        (clip_length, rrc_params[0], rrc_params[0], 3),
+                        dtype=torch.float32,
+                    )
+                    return placeholder
             else:
                 vr = decord.VideoReader(video_filename)
                 end_second = min(end_second, (len(vr) - 1) / fps + chunk_end)
@@ -156,6 +165,8 @@ def video_loader(
         assert res.shape[0] == clip_length, "{}, {}, {}, {}, {}, {}, {}".format(
             root, vid, second, end_second, res.shape[0], rel_frame_ids, frame_ids
         )
+
+        # Shape (clip_length, H, W, 3)
         return res
 
 
@@ -190,6 +201,9 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
         if self.dataset == "ego4d":
             with open(metadata, "rb") as f:
                 self.samples = pickle.load(f)
+        elif self.dataset == "ego4d_mcq":
+            with open(metadata, "r") as f:
+                self.samples = json.load(f)
         elif self.dataset in ["ek100_cls", "ek100_mir"]:
             video_list = glob.glob(osp.join(self.root, "*/*.MP4"))
             fps_dict = {
@@ -400,6 +414,39 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
                 else:
                     raise ValueError
             return frames, narration
+        elif self.dataset == "ego4d_mcq":
+            itemMCQ = self.samples[str(i)]
+            answerIndex = itemMCQ["answer"]
+            textQuery = itemMCQ["query"]["clip_text"]
+            sampleOptions = itemMCQ["choices"]
+            frames_options = []
+            narration_options = []
+            for option_id in range(len(sampleOptions)):
+                option = sampleOptions[str(option_id)]
+                frames = video_loader(
+                    root=self.root,
+                    vid=option["video_uid"],
+                    ext="mp4",
+                    second=float(option["clip_start"]),
+                    end_second=float(option["clip_end"]),
+                    chunk_len=chunk_len,
+                    clip_length=clip_length,
+                    threads=threads,
+                    fast_rrc=fast_rrc,
+                    rrc_params=rrc_params,
+                    fast_rcc=fast_rcc,
+                    rcc_params=rcc_params,
+                    jitter=is_training,
+                )
+                frames_options.append(frames)
+                narration_options.append(option["clip_text"])
+            return (
+                textQuery,
+                frames_options,
+                narration_options,
+                answerIndex,
+                itemMCQ["types"],
+            )
         elif self.dataset == "ek100_mir":
             vid_path, start_second, end_second, fps, narration, verb, noun = (
                 self.samples[i]
@@ -742,6 +789,97 @@ class VideoClassyDataset(VideoCaptionDatasetBase):
                 label = self.label_mapping[label]
 
         return frames, label
+
+
+class VideoCaptionDatasetMCQ(VideoCaptionDatasetBase):
+    def __init__(
+        self,
+        dataset,
+        root,
+        metadata,
+        transform=None,
+        is_training=True,
+        tokenizer=None,
+        chunk_len=15,
+        clip_length=32,
+        clip_stride=2,
+        sparse_sample=False,
+        narration_selection="random",
+        threads=1,
+        fast_rrc=False,
+        rrc_params=(224, (0.5, 1.0)),
+        fast_rcc=False,
+        rcc_params=(224,),
+        num_clips=1,
+    ):
+        super().__init__(dataset, root, metadata)
+
+        self.full_samples = self.samples.copy()
+        self.transform = transform
+        self.is_training = is_training
+        self.tokenizer = tokenizer
+        self.clip_length = clip_length
+        self.clip_stride = clip_stride
+        self.sparse_sample = sparse_sample
+        self.narration_selection = narration_selection
+        self.chunk_len = chunk_len
+
+        self.threads = threads
+        self.fast_rrc = fast_rrc
+        self.rrc_params = rrc_params
+        self.fast_rcc = fast_rcc
+        self.rcc_params = rcc_params
+        self.num_clips = num_clips
+
+    def __getitem__(self, i):
+
+        textQuery, frames_options, narration_options, answerIndex, q_type = (
+            self.get_raw_item(
+                i,
+                is_training=self.is_training,
+                chunk_len=self.chunk_len,
+                num_clips=self.num_clips,
+                clip_length=self.clip_length,
+                clip_stride=self.clip_stride,
+                threads=self.threads,
+                fast_rrc=self.fast_rrc,
+                rrc_params=self.rrc_params,
+                fast_rcc=self.fast_rcc,
+                rcc_params=self.rcc_params,
+                sparse_sample=self.sparse_sample,
+                narration_selection=self.narration_selection,
+            )
+        )
+
+        # apply transformation
+        if self.transform is not None:
+            frames_options = [self.transform(frames) for frames in frames_options]
+
+        # tokenize caption
+        if self.tokenizer is not None:
+            textQuery = self.tokenizer(textQuery)[0]
+            narration_options = self.tokenizer(narration_options)[0]
+
+            if isinstance(textQuery, tuple):
+                textQuery, mask_query = textQuery
+                narration_options, mask_options = narration_options
+                return (
+                    textQuery,
+                    torch.stack(frames_options, dim=0),
+                    narration_options,
+                    answerIndex,
+                    q_type,
+                    mask_query,
+                    mask_options,
+                )
+            else:
+                return (
+                    textQuery,
+                    torch.stack(frames_options, dim=0),
+                    narration_options,
+                    answerIndex,
+                    q_type,
+                )
 
 
 def get_downstream_dataset(
