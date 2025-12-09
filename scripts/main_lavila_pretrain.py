@@ -1,13 +1,8 @@
 import argparse
 from collections import OrderedDict
 from functools import partial
-from itertools import islice
-import json
 import os
 import time
-from typing import Any
-import numpy as np
-import pandas as pd
 
 import kornia as K
 import torch
@@ -24,17 +19,21 @@ from avion.losses.losses import ClipLoss
 import avion.models.model_clip as model_clip
 from avion.optim.schedulers import cosine_scheduler
 import avion.utils.distributed as dist_utils
-from avion.utils.evaluation_ek100mir import get_mAP, get_nDCG
+
+import avion.utils.evaluation_ek100cls as eval_ek100cls
+import avion.utils.evaluation_egtea as eval_egtea
+import avion.utils.evaluation_charades as eval_charades
+import avion.utils.evaluation_egomcq as eval_egomcq
+from avion.utils.validate import validate_all
 from avion.utils.meters import AverageMeter, ProgressMeter
 from avion.utils.misc import check_loss_nan
 
 # Additional imports
+import wandb
+
 from dotenv import load_dotenv
 
 load_dotenv()
-
-import wandb
-from tqdm import tqdm
 
 
 def get_args_parser():
@@ -234,6 +233,11 @@ def get_args_parser():
         help="If true, will enable the train loader shuffle",
     )
 
+    # For the classification evaluation
+    parser.add_argument(
+        "--num-clips", default=1, type=int, help="number of clips for testing"
+    )
+
     return parser
 
 
@@ -334,7 +338,7 @@ def main(args):
     if args.resume:
         if os.path.isfile(args.resume):
             print("=> loading resume checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume, map_location="cpu")
+            checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
             if checkpoint["args"].clip_length != args.clip_length:
                 load_temporal_embedding = checkpoint["state_dict"][
                     "module.visual.temporal_embedding"
@@ -378,7 +382,9 @@ def main(args):
         latest = os.path.join(args.output_dir, "checkpoint.pt")
         if os.path.isfile(latest):
             print("=> loading latest checkpoint '{}'".format(latest))
-            latest_checkpoint = torch.load(latest, map_location="cpu")
+            latest_checkpoint = torch.load(
+                latest, map_location="cpu", weights_only=False
+            )
             args.start_epoch = latest_checkpoint["epoch"]
             model.load_state_dict(latest_checkpoint["state_dict"])
             optimizer.load_state_dict(latest_checkpoint["optimizer"])
@@ -483,7 +489,7 @@ def main(args):
             [train_dataset, pseudo_label_dataset]
         )
 
-    val_dataset = VideoCaptionDatasetCLIP(
+    ek100_mir_val_dataset = VideoCaptionDatasetCLIP(
         "ek100_mir",
         args.root_val,
         args.val_metadata,
@@ -497,14 +503,75 @@ def main(args):
         rcc_params=(crop_size,),
     )
 
+    ek100_cls_val_dataset, ek100_cls_labels = eval_ek100cls.get_val_dataset(
+        transform=val_transform,
+        video_chunk_length=args.video_chunk_length,
+        clip_length=args.clip_length,
+        clip_stride=args.clip_stride,
+        fused_decode_crop=args.fused_decode_crop,
+        crop_size=crop_size,
+        num_clips=args.num_clips,
+        threads=args.decode_threads,
+    )
+
+    egtea_val_dataset, egtea_labels = eval_egtea.get_val_dataset(
+        transform=val_transform,
+        video_chunk_length=args.video_chunk_length,
+        clip_length=args.clip_length,
+        clip_stride=args.clip_stride,
+        fused_decode_crop=args.fused_decode_crop,
+        crop_size=crop_size,
+        num_clips=args.num_clips,
+        threads=args.decode_threads,
+    )
+
+    charades_val_dataset, charades_labels = eval_charades.get_val_dataset(
+        transform=val_transform,
+        video_chunk_length=args.video_chunk_length,
+        clip_length=args.clip_length,
+        clip_stride=args.clip_stride,
+        fused_decode_crop=args.fused_decode_crop,
+        crop_size=crop_size,
+        num_clips=args.num_clips,
+        threads=args.decode_threads,
+    )
+
+    egomcq_val_dataset = eval_egomcq.get_val_dataset(
+        transform=val_transform,
+        clip_length=args.clip_length,
+        clip_stride=args.clip_stride,
+        tokenizer=tokenizer,
+        chunk_length=args.video_chunk_length,
+        threads=args.decode_threads,
+        fused_decode_crop=args.fused_decode_crop,
+        crop_size=crop_size,
+        num_clips=args.num_clips,
+    )
+
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-        val_sampler = torch.utils.data.distributed.DistributedSampler(
-            val_dataset, shuffle=False
+        ek100_mir_val_sampler = torch.utils.data.distributed.DistributedSampler(
+            ek100_mir_val_dataset, shuffle=False
+        )
+        ek100_cls_val_sampler = torch.utils.data.distributed.DistributedSampler(
+            ek100_cls_val_dataset, shuffle=False
+        )
+        egtea_val_sampler = torch.utils.data.distributed.DistributedSampler(
+            egtea_val_dataset, shuffle=False
+        )
+        charades_val_sampler = torch.utils.data.distributed.DistributedSampler(
+            charades_val_dataset, shuffle=False
+        )
+        egomcq_val_sampler = torch.utils.data.distributed.DistributedSampler(
+            egomcq_val_dataset, shuffle=False
         )
     else:
         train_sampler = None
-        val_sampler = None
+        ek100_mir_val_sampler = None
+        ek100_cls_val_sampler = None
+        egtea_val_sampler = None
+        charades_val_sampler = None
+        egomcq_val_sampler = None
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -519,49 +586,79 @@ def main(args):
 
     print("len(train_loader) = {}".format(len(train_loader)))
 
-    if args.evaluate_train_dataset:
-        # Start evaluation at batch index args.start_batch (default 0)
-        start_batch = args.skip_to_batch
-
-        dataset = train_loader.dataset
-        sampler = train_loader.sampler
-        bs = train_loader.batch_size
-
-        # reconstruct the sample order from the sampler
-        indices = list(sampler)
-
-        # skip to the right place
-        start = start_batch * bs
-        total_batches = len(indices) // bs
-
-        # iterate from the chosen batch onwards
-        for _it, i in enumerate(range(start, len(indices), bs), start=start_batch):
-            batch_indices = indices[i : i + bs]
-            batch_samples = [dataset[j] for j in batch_indices]
-            train_loader.collate_fn(batch_samples)
-
-            if _it % 100 == 0:
-                print(f"===> Processed batch {_it} of {total_batches}")
-
-        return
-
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset,
+    ek100_mir_val_loader = torch.utils.data.DataLoader(
+        ek100_mir_val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.workers,
-        pin_memory=False,
-        sampler=val_sampler,
+        pin_memory=True,
+        sampler=ek100_mir_val_sampler,
         drop_last=False,
     )
 
-    print("len(val_loader) = {}".format(len(val_loader)))
+    print("len(ek100_mir_val_loader) = {}".format(len(ek100_mir_val_loader)))
+
+    ek100_cls_val_loader = torch.utils.data.DataLoader(
+        ek100_cls_val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.workers,
+        pin_memory=True,
+        sampler=ek100_cls_val_sampler,
+        drop_last=False,
+    )
+
+    print("len(ek100_cls_val_loader) = {}".format(len(ek100_cls_val_loader)))
+
+    egtea_val_loader = torch.utils.data.DataLoader(
+        egtea_val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.workers,
+        pin_memory=True,
+        sampler=egtea_val_sampler,
+        drop_last=False,
+    )
+
+    print("len(egtea_val_loader) = {}".format(len(egtea_val_loader)))
+
+    charades_val_loader = torch.utils.data.DataLoader(
+        charades_val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.workers,
+        pin_memory=True,
+        sampler=charades_val_sampler,
+        drop_last=False,
+    )
+
+    print("len(charades_val_loader) = {}".format(len(charades_val_loader)))
+
+    egomcq_val_loader = torch.utils.data.DataLoader(
+        egomcq_val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.workers,
+        pin_memory=True,
+        sampler=egomcq_val_sampler,
+        drop_last=False,
+    )
+
+    print("len(egomcq_val_loader) = {}".format(len(egomcq_val_loader)))
+
+    val_loaders = {
+        "ego4d_mir": ek100_mir_val_loader,
+        "ego4d_cls": (ek100_cls_val_loader, ek100_cls_labels),
+        "egtea": (egtea_val_loader, egtea_labels),
+        "charades": (charades_val_loader, charades_labels),
+        "ego4d_mcq": egomcq_val_loader,
+    }
 
     if args.evaluate:
-        val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
-        if dist_utils.is_main_process():
-            with open(os.path.join(args.output_dir, "eval_log.txt"), "a") as f:
-                f.write(json.dumps(val_stats) + "\n")
+        val_result, _ = validate_all(
+            model, criterion, tokenizer, val_transform_gpu, args, val_loaders
+        )
+        print(f"Validation Results: {val_result}")
         return
 
     if args.fix_lr:
@@ -580,19 +677,25 @@ def main(args):
 
     # Perform zsh only if the start_epoch is 0
     if args.start_epoch == 0:
-        val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
+        val_result, formatted = validate_all(
+            model, criterion, tokenizer, val_transform_gpu, args, val_loaders
+        )
+
+        print(f"Zero-shot Results before training: {val_result}")
         if dist_utils.is_main_process():
-            wandb.log(data={f"test_{k}": v for k, v in val_stats.items()}, step=0)
+            wandb.log(
+                data=formatted,
+                step=0,
+            )
 
     print("=> beginning training")
     best_acc1 = 0.0
     for epoch in range(args.start_epoch, args.epochs):
-        
+
         if args.distributed and args.enable_train_loader_shuffle:
             train_loader.sampler.set_epoch(epoch)
-        
-        # train for one epoch
-        train_stats = train(
+
+        train(
             train_loader,
             train_transform_gpu,
             model,
@@ -607,8 +710,11 @@ def main(args):
         if (epoch + 1) % args.eval_freq != 0:
             continue
 
-        val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
-        acc1 = val_stats["avg_map"]
+        val_result, formatted = validate_all(
+            model, criterion, tokenizer, val_transform_gpu, args, val_loaders
+        )
+
+        acc1 = val_result["ego4d_mir"]["avg_map"]
 
         is_best = acc1 > best_acc1
         best_acc1 = max(acc1, best_acc1)
@@ -633,12 +739,9 @@ def main(args):
             args.output_dir,
         )
 
-        # Here I just need to log the eval stats and/or train stats and not increment the step counter
-        # since I already did that in the training loop
-
         if dist_utils.is_main_process():
             wandb.log(
-                data={f"test_{k}": v for k, v in val_stats.items()},
+                data=formatted,
                 step=wandb.run.step,
             )
 
@@ -798,128 +901,6 @@ def train(
         **{k: v.avg for k, v in metrics.items()},
         "lr": optimizer.param_groups[0]["lr"],
         "logit_scale": logit_scale,
-    }
-
-
-def validate_mir(val_loader, transform_gpu, model, criterion, args):
-    batch_time = AverageMeter("Time", ":6.2f")
-    data_time = AverageMeter("Data", ":6.2f")
-    mem = AverageMeter("Mem (GB)", ":6.1f")
-    metric_names = ["loss", "clip_acc"]
-    iters_per_epoch = len(val_loader) // args.update_freq
-    metrics = OrderedDict([(name, AverageMeter(name, ":.2e")) for name in metric_names])
-    progress = ProgressMeter(
-        iters_per_epoch,
-        [batch_time, data_time, mem, *metrics.values()],
-        prefix="Test: ",
-    )
-
-    # switch to eval mode
-    model.eval()
-
-    all_video_embed = [[] for _ in range(args.world_size)]
-    all_text_embed = [[] for _ in range(args.world_size)]
-    total_num = 0
-    with amp.autocast(enabled=not args.disable_amp):
-        with torch.no_grad():
-            end = time.time()
-            for i, inputs in enumerate(val_loader):
-                # measure data loading time
-                data_time.update(time.time() - end)
-
-                inputs = [tensor.cuda(args.gpu, non_blocking=True) for tensor in inputs]
-                _ = (
-                    inputs.pop()
-                )  # loader will a "relevancy" variable which is not needed except ek100_mir
-
-                # compute output
-                if args.fused_decode_crop and len(transform_gpu) > 0:
-                    inputs[0] = inputs[0].permute(0, 4, 1, 2, 3)
-                    inputs[0] = transform_gpu(inputs[0])
-                image_features, text_features, logit_scale = model(*inputs)
-                gathered_image_features = [
-                    torch.zeros_like(image_features) for _ in range(args.world_size)
-                ]
-                gathered_text_features = [
-                    torch.zeros_like(text_features) for _ in range(args.world_size)
-                ]
-                torch.distributed.all_gather(gathered_image_features, image_features)
-                torch.distributed.all_gather(gathered_text_features, text_features)
-                for j in range(args.world_size):
-                    all_video_embed[j].append(gathered_image_features[j].detach().cpu())
-                    all_text_embed[j].append(gathered_text_features[j].detach().cpu())
-                loss_dict = criterion(image_features, text_features, logit_scale)
-
-                for k in loss_dict:
-                    metrics[k].update(loss_dict[k].item(), args.batch_size)
-
-                total_num += image_features.shape[0] * args.world_size
-
-                # measure elapsed time
-                batch_time.update(time.time() - end)
-                end = time.time()
-
-                mem.update(torch.cuda.max_memory_allocated() // 1e9)
-
-                if i % args.print_freq == 0:
-                    progress.display(i)
-    progress.synchronize()
-
-    for j in range(args.world_size):
-        all_video_embed[j] = torch.cat(all_video_embed[j], dim=0).numpy()
-        all_text_embed[j] = torch.cat(all_text_embed[j], dim=0).numpy()
-
-    all_text_embed_reorg, all_video_embed_reorg = [], []
-    for i in range(total_num):
-        all_video_embed_reorg.append(
-            all_video_embed[i % args.world_size][i // args.world_size]
-        )
-        all_text_embed_reorg.append(
-            all_text_embed[i % args.world_size][i // args.world_size]
-        )
-
-    all_text_embed = np.vstack(all_text_embed_reorg)
-    all_video_embed = np.vstack(all_video_embed_reorg)
-
-    all_text_embed = all_text_embed[:9668, :]
-    all_video_embed = all_video_embed[:9668, :]
-
-    similarity_matrix = np.matmul(all_video_embed, all_text_embed.T)
-    similarity_matrix = (similarity_matrix + 1) / 2
-
-    video_id = pd.read_csv(args.val_metadata).values[:, 0]
-    text_id = pd.read_csv(args.val_metadata.replace("test", "test_sentence")).values[
-        :, 0
-    ]
-    indexes = [video_id.tolist().index(elem) for elem in text_id]
-
-    similarity_matrix = similarity_matrix[:, indexes]
-
-    print(similarity_matrix.shape)
-
-    rel_matrix = pd.read_pickle(args.relevancy_path)
-    vis_map, txt_map, avg_map = get_mAP(similarity_matrix, rel_matrix)
-
-    print(
-        "mAP: V->T: {:.3f} T->V: {:.3f} AVG: {:.3f}".format(vis_map, txt_map, avg_map)
-    )
-
-    vis_nDCG, txt_nDCG, avg_nDCG = get_nDCG(similarity_matrix, rel_matrix)
-
-    print(
-        "nDCG: V->T: {:.3f} T->V: {:.3f} AVG: {:.3f}".format(
-            vis_nDCG, txt_nDCG, avg_nDCG
-        )
-    )
-
-    return {
-        **{k: v.avg for k, v in metrics.items()},
-        "vis_map": vis_map,
-        "txt_map": txt_map,
-        "avg_map": avg_map,
-        "vis_ndcg": vis_nDCG,
-        "txt_ndcg": txt_nDCG,
-        "avg_ndcg": avg_nDCG,
     }
 
 
