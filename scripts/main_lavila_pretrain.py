@@ -21,9 +21,11 @@ import avion.models.model_clip as model_clip
 from avion.optim.schedulers import cosine_scheduler
 import avion.utils.distributed as dist_utils
 from avion.utils.evaluation_ek100mir import validate_mir
-from avion.utils.evaluation_ek100cls import validate_cls
+
+import avion.utils.evaluation_ek100cls as eval_ek100cls
+import avion.utils.evaluation_charades as eval_charades
 from avion.utils.meters import AverageMeter, ProgressMeter
-from avion.utils.misc import check_loss_nan, generate_label_map
+from avion.utils.misc import check_loss_nan
 
 # Additional imports
 from dotenv import load_dotenv
@@ -500,33 +502,16 @@ def main(args):
         rcc_params=(crop_size,),
     )
 
-    labels, mapping_vn2act = generate_label_map("ek100_cls")
-    args.mapping_act2v = {
-        i: int(vn.split(":")[0]) for (vn, i) in mapping_vn2act.items()
-    }
-    args.mapping_act2n = {
-        i: int(vn.split(":")[1]) for (vn, i) in mapping_vn2act.items()
-    }
-    args.actions = pd.DataFrame.from_dict(
-        {"verb": args.mapping_act2v.values(), "noun": args.mapping_act2n.values()}
-    )
-    args.num_classes = len(labels)
-    
-    ek100_cls_val_dataset = VideoClassyDataset(
-        dataset="ek100_cls",
-        root=f"{os.environ.get('EK100_META_DIR')}/video_320p_15sec",
+    ek100_cls_val_dataset, ek100_cls_labels = eval_ek100cls.get_val_dataset(
         metadata=args.val_metadata,
         transform=val_transform,
-        is_training=False,
-        label_mapping=mapping_vn2act,
-        num_clips=args.num_clips,
-        chunk_len=args.video_chunk_length,
-        clip_stride=args.clip_stride,
-        threads=args.decode_threads,
-        fast_rcc=args.fused_decode_crop,
-        rcc_params=(crop_size,),
-        is_trimmed=True,
+        video_chunk_length=args.video_chunk_length,
         clip_length=args.clip_length,
+        clip_stride=args.clip_stride,
+        fused_decode_crop=args.fused_decode_crop,
+        crop_size=crop_size,
+        num_clips=args.num_clips,
+        threads=args.decode_threads,
     )
 
     if args.distributed:
@@ -584,13 +569,15 @@ def main(args):
             ek100_mir_val_loader, val_transform_gpu, model, criterion, args
         )
 
-        ek100_cls_val_results = validate_cls(
-            ek100_cls_val_loader,
-            val_transform_gpu,
-            model,
-            args,
-            len(ek100_cls_val_dataset),
-            val_dataset_name="ek100_cls",
+        ek100_cls_val_results = eval_ek100cls.validate_zeroshot(
+            val_loader=ek100_cls_val_loader,
+            use_template=True,
+            labels=ek100_cls_labels,
+            model=model,
+            tokenizer=tokenizer,
+            disable_amp=args.disable_amp,
+            fused_decode_crop=args.fused_decode_crop,
+            transform_gpu=val_transform_gpu,
         )
 
         print(f"ek100_mir_val_results: {ek100_mir_val_results}")
@@ -618,13 +605,15 @@ def main(args):
             ek100_mir_val_loader, val_transform_gpu, model, criterion, args
         )
 
-        ek100_cls_val_results = validate_cls(
-            ek100_cls_val_loader,
-            val_transform_gpu,
-            model,
-            args,
-            len(ek100_cls_val_dataset),
-            val_dataset_name="ek100_cls",
+        ek100_cls_val_results = eval_ek100cls.validate_zeroshot(
+            val_loader=ek100_cls_val_loader,
+            use_template=True,
+            labels=ek100_cls_labels,
+            model=model,
+            tokenizer=tokenizer,
+            disable_amp=args.disable_amp,
+            fused_decode_crop=args.fused_decode_crop,
+            transform_gpu=val_transform_gpu,
         )
 
         print(f"ek100_mir_val_results: {ek100_mir_val_results}")
@@ -665,13 +654,15 @@ def main(args):
             ek100_mir_val_loader, val_transform_gpu, model, criterion, args
         )
 
-        ek100_cls_val_results = validate_cls(
-            ek100_cls_val_loader,
-            val_transform_gpu,
-            model,
-            args,
-            len(ek100_cls_val_dataset),
-            val_dataset_name="ek100_cls",
+        ek100_cls_val_results = eval_ek100cls.validate_zeroshot(
+            val_loader=ek100_cls_val_loader,
+            use_template=True,
+            labels=ek100_cls_labels,
+            model=model,
+            tokenizer=tokenizer,
+            disable_amp=args.disable_amp,
+            fused_decode_crop=args.fused_decode_crop,
+            transform_gpu=val_transform_gpu,
         )
 
         acc1 = ek100_mir_val_results["avg_map"]
