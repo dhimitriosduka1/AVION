@@ -52,9 +52,9 @@ def validate_all(model, criterion, tokenizer, val_transform_gpu, args, val_loade
             transform_gpu=val_transform_gpu,
         )
 
-    if "egomcq" in val_loaders:
-        results["egomcq"] = eval_egomcq.validate_zeroshot(
-            val_loader=val_loaders["egomcq"],
+    if "ego4d_mcq" in val_loaders:
+        results["ego4d_mcq"] = eval_egomcq.validate_zeroshot(
+            val_loader=val_loaders["ego4d_mcq"],
             model=model,
             fused_decode_crop=args.fused_decode_crop,
             transform_gpu=val_transform_gpu,

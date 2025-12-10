@@ -255,7 +255,7 @@ def main(args):
         wandb.init(
             project=args.wandb_project_name,
             name=args.wandb_run_name,
-            id=args.wandb_run_name,  # use run name as id
+            id=args.wandb_run_name,
             tags=[],
             resume="allow",
             config=vars(args),
