@@ -642,7 +642,7 @@ def main(args):
 
     egomcq_val_loader = torch.utils.data.DataLoader(
         egomcq_val_dataset,
-        batch_size=args.batch_size,
+        batch_size=args.batch_size // 4,
         shuffle=False,
         num_workers=args.workers,
         pin_memory=True,
