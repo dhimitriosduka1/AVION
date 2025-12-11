@@ -2,7 +2,7 @@
 
 #SBATCH -o /dais/fs/scratch/dduka/logs/avion/notebook_%j.out
 #SBATCH -e /dais/fs/scratch/dduka/logs/avion/notebook_%j.err
-#SBATCH -J debug_run
+#SBATCH -J jepa_v2
 #SBATCH --time=23:59:00
 
 #SBATCH --nodes=1
