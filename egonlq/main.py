@@ -6,16 +6,14 @@
 
 
 """Main script to train/test models for Ego4D NLQ dataset."""
-import argparse
 import os
-import pdb
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-import numpy as np
 import options
 import torch
 import torch.nn as nn
 from model.VSLNet import build_optimizer_and_scheduler, VSLNet
-from tqdm.auto import tqdm
 from utils.data_gen import gen_or_load_dataset, visual_feature_sampling
 from utils.data_util import load_json, load_video_features, save_json
 from utils.runner_utils import (
@@ -26,13 +24,14 @@ from utils.runner_utils import (
     set_th_config,
 )
 import json
-import tqdm
-from glob import glob
 import torch
+from glob import glob
 import torch.utils.data
 from model.model import FrozenInTime
 from utils.data_loader import get_test_loader, get_train_loader
 
+import torch.nn.functional as F
+import avion.models.model_clip as model_clip
 
 class Dataset(torch.utils.data.Dataset):
     def __init__(self, dataset):
@@ -42,7 +41,6 @@ class Dataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         record = self.dataset[index]
         video_feature = torch.load(record["video_frame_path"])
-        # video_feature = visual_feature_sampling(video_feature, max_num_clips=self.args.max_pos_len)
         text_tokens = record["text_tokens"]
 
         return (
@@ -74,40 +72,69 @@ def fused_feature_extract(args, dataset, feat_path, split="train_set"):
         shuffle=False,
     )
 
-    f = open("configs/nlq.json")
-    config = json.load(f)
+    # Load my custom model
+    assert args.resume != None, "args.resume must be provided"
+    if os.path.isfile(args.resume):
+        print("=> loading resume checkpoint '{}'".format(args.resume))
+        checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
+        old_args = checkpoint["args"]
 
-    video_params = {
-        "model": config["arch"]["args"]["video_params"]["model"],
-        "arch_config": config["arch"]["args"]["video_params"]["arch_config"],
-        "num_frames": config["arch"]["args"]["video_params"]["num_frames"],
-        "pretrained": True,
-        "time_init": config["arch"]["args"]["video_params"]["time_init"],
-    }
-    text_params = {
-        "model": config["arch"]["args"]["text_params"]["model"],
-        "pretrained": True,
-        "input": config["arch"]["args"]["text_params"]["input"],
-    }
-    projection_dim = config["arch"]["args"]["projection_dim"]
-    load_checkpoint = args.model_name
-    projection = "minimal"
-    load_temporal_fix = "bilinear"
-    task_names = "EgoNCE_ITM_MLM"
-    norm_layer = None
-    embed_dim = 768
+        model = getattr(model_clip, old_args.model)(
+            freeze_temperature=old_args.freeze_temperature,
+            use_grad_checkpointing=old_args.use_grad_checkpointing,
+            context_length=old_args.context_length,
+            vocab_size=old_args.vocab_size,
+            patch_dropout=old_args.patch_dropout,
+            num_frames=old_args.clip_length,
+            drop_path_rate=old_args.drop_path_rate,
+            use_fast_conv1=old_args.use_fast_conv1,
+            use_flash_attn=old_args.use_flash_attn,
+            use_quick_gelu=True,
+            project_embed_dim=old_args.project_embed_dim,
+            pretrain_zoo=old_args.pretrain_zoo,
+            pretrain_path=old_args.pretrain_path,
+        )
 
-    model = FrozenInTime(
-        video_params,
-        text_params,
-        projection_dim=projection_dim,
-        load_checkpoint=load_checkpoint,
-        projection=projection,
-        load_temporal_fix=load_temporal_fix,
-        task_names=task_names,
-        norm_layer=norm_layer,
-        embed_dim=embed_dim,
-    )
+        epoch = checkpoint["epoch"] if "epoch" in checkpoint else 0
+        model.load_state_dict(checkpoint["state_dict"], strict=False)
+        print("=> loaded resume checkpoint '{}' (epoch {})".format(args.resume, epoch))
+    else:
+        print("=> no checkpoint found at '{}'".format(args.resume))
+
+    # f = open("configs/nlq.json")
+    # config = json.load(f)
+
+    # video_params = {
+    #     "model": config["arch"]["args"]["video_params"]["model"],
+    #     "arch_config": config["arch"]["args"]["video_params"]["arch_config"],
+    #     "num_frames": config["arch"]["args"]["video_params"]["num_frames"],
+    #     "pretrained": True,
+    #     "time_init": config["arch"]["args"]["video_params"]["time_init"],
+    # }
+    # text_params = {
+    #     "model": config["arch"]["args"]["text_params"]["model"],
+    #     "pretrained": True,
+    #     "input": config["arch"]["args"]["text_params"]["input"],
+    # }
+    # projection_dim = config["arch"]["args"]["projection_dim"]
+    # load_checkpoint = args.model_name
+    # projection = "minimal"
+    # load_temporal_fix = "bilinear"
+    # task_names = "EgoNCE_ITM_MLM"
+    # norm_layer = None
+    # embed_dim = 768
+
+    # model = FrozenInTime(
+    #     video_params,
+    #     text_params,
+    #     projection_dim=projection_dim,
+    #     load_checkpoint=load_checkpoint,
+    #     projection=projection,
+    #     load_temporal_fix=load_temporal_fix,
+    #     task_names=task_names,
+    #     norm_layer=norm_layer,
+    #     embed_dim=embed_dim,
+    # )
 
     device = torch.device(args.cuda_base if torch.cuda.is_available() else "cpu")
     model = model.to(device)
@@ -127,17 +154,15 @@ def fused_feature_extract(args, dataset, feat_path, split="train_set"):
                     "attention_mask": batch[1]["attention_mask"][0].to(device),
                 },
             }
-            # fused_video_features = model.forward(data)
-            # fused_video_features = model.module.compute_video(data['video'])
 
             projection_dim = 768
             fused_video_features = torch.zeros(data["video"].shape[0], projection_dim)
-            b_s = 256  ## Batch size inside the next loop, as (897, 4, 3, 224, 224) goes out of memory
+            b_s = 256
 
             if data["video"].shape[0] % b_s == 0:
                 times = data["video"].shape[0] // b_s
             else:
-                times = 1 + data["video"].shape[0] // b_s  ##  '1 +' is added by us
+                times = 1 + data["video"].shape[0] // b_s
 
             for j in range(times):
                 start = j * b_s
@@ -148,7 +173,6 @@ def fused_feature_extract(args, dataset, feat_path, split="train_set"):
 
                 video_length = end - start
 
-                # fused_video_features[start:end,] = model.module.compute_video(data['video'][start:end,])
                 data_batch = {
                     "video": data["video"][start:end,],
                     "text": {
@@ -160,8 +184,6 @@ def fused_feature_extract(args, dataset, feat_path, split="train_set"):
                 }
                 fused_video_features[start:end,] = model.forward(data_batch)
 
-            # fused_video_features = visual_feature_sampling(fused_video_features, max_num_clips=args.max_pos_len)
-
             dual_text_features = model.module.compute_text_tokens(
                 {
                     "input_ids": batch[1]["input_ids"][0][0:1].to(device),
@@ -169,11 +191,6 @@ def fused_feature_extract(args, dataset, feat_path, split="train_set"):
                 },
                 is_proj=False,
             )
-
-            # saved_feature_dict = {"fused_video_features": fused_video_features.detach().cpu(), "dual_text_features": dual_text_features.detach().cpu(),
-            #                      "sample_id": batch[2][0], "vid": batch[3][0], "s_time": batch[4][0], "e_time": batch[5][0],
-            #                      "duration": batch[6][0], "query": batch[7][0], "s_ind": batch[8][0], "e_ind": batch[9][0],
-            #                      "v_len": batch[10][0], "annotation_uid": batch[11][0], "query_idx": batch[12][0], "text_token": {"input_ids": batch[1]["input_ids"][0][0:1].to(device), "attention_mask": batch[1]["attention_mask"][0][0:1].to(device)}}
 
             saved_feature_dict = {
                 "fused_video_features": fused_video_features.detach().cpu(),
@@ -198,24 +215,25 @@ def fused_feature_extract(args, dataset, feat_path, split="train_set"):
 
 
 def main(args, parser):
-
-    # set tensorflow configs
-    # set_th_config(args.seed)
-
     feat_path = os.path.join(
         str(args.feature_dir), str(args.model_name).split("/")[-1].split(".")[0]
     )
 
-    if not os.path.exists(feat_path):
-        os.mkdir(feat_path)
+    if True or not os.path.exists(feat_path):
+        os.makedirs(feat_path, exist_ok=True)
         print("Feature is being extracted")
+
         # prepare or load dataset
         dataset = gen_or_load_dataset(args)
         args.char_size = dataset.get("n_chars", -1)
         args.word_size = dataset.get("n_words", -1)
-        fused_feature_extract(args, dataset, feat_path, split="train_set")
-        fused_feature_extract(args, dataset, feat_path, split="val_set")
-        fused_feature_extract(args, dataset, feat_path, split="test_set")
+
+
+        # fused_feature_extract(args, dataset, feat_path, split="train_set")
+        fused_feature_extract(args, dataset, feat_path, split="val_set") 
+        # fused_feature_extract(args, dataset, feat_path, split="test_set")
+
+    return
 
     train_loader = get_train_loader(
         glob(os.path.join(feat_path, "train") + "/*.pt"), args=args
@@ -260,12 +278,9 @@ def main(args, parser):
 
     if args.mode.lower() == "train":
         eval_period = num_train_batches // 2
-        # pdb.set_trace()
-        # build model
         model = VSLNet(configs=args).to(device)
 
         optimizer, scheduler = build_optimizer_and_scheduler(model, configs=args)
-        # start training
         best_metric = -1.0
 
         new_save_dir = (
@@ -273,6 +288,7 @@ def main(args, parser):
         )
         if not os.path.exists(new_save_dir):
             os.mkdir(new_save_dir)
+
         score_writer = open(
             os.path.join(
                 new_save_dir,
@@ -309,7 +325,6 @@ def main(args, parser):
                 # prepare features
                 vfeats, vfeat_lens = vfeats.to(device), vfeat_lens.to(device)
 
-                # pdb.set_trace()
                 dual_text_feature = dual_text_feature.to(device)
                 s_labels, e_labels, h_labels = (
                     s_labels.to(device),
@@ -341,14 +356,13 @@ def main(args, parser):
                 )
                 total_loss = loc_loss + args.highlight_lambda * highlight_loss
 
-                # print(total_loss)
+                print(total_loss)
                 # total_loss = loc_loss
+
                 # compute and apply gradients
                 optimizer.zero_grad()
                 total_loss.backward()
-                nn.utils.clip_grad_norm_(
-                    model.parameters(), args.clip_norm
-                )  # clip gradient
+                nn.utils.clip_grad_norm_(model.parameters(), args.clip_norm)
 
                 optimizer.step()
                 scheduler.step()
@@ -362,10 +376,7 @@ def main(args, parser):
                     print(
                         f"\nEpoch: {epoch + 1:2d} | Step: {global_step:5d}", flush=True
                     )
-                    # result_save_path = os.path.join(
-                    #    model_dir,
-                    #    f"{args.model_name}_{epoch}_{global_step}_preds.json",
-                    # )
+
                     # Evaluate on val, keep the top 3 checkpoints.
                     results, mIoU, score_str = eval_test(
                         model=model,
@@ -410,36 +421,6 @@ def main(args, parser):
         score_writer.write(epoch_step + "\n" + best_score_str)
         score_writer.flush()
         score_writer.close()
-
-    """
-
-    elif configs.mode.lower() == "test":
-        if not os.path.exists(model_dir):
-            raise ValueError("No pre-trained weights exist")
-        # load previous configs
-        pre_configs = load_json(os.path.join(model_dir, "configs.json"))
-        parser.set_defaults(**pre_configs)
-        configs = parser.parse_args()
-        # build model
-        model = VSLNet(
-            configs=configs, word_vectors=dataset.get("word_vector", None)
-        ).to(device)
-
-        # get last checkpoint file
-        filename = get_last_checkpoint(model_dir, suffix="t7")
-        model.load_state_dict(torch.load(filename))
-        model.eval()
-        result_save_path = filename.replace(".t7", "_test_result.json")
-        results, mIoU, score_str = eval_test(
-            model=model,
-            data_loader=test_loader,
-            device=device,
-            mode="test",
-            result_save_path=result_save_path,
-            configs=configs,
-        )
-        print(score_str, flush=True)
-    """
 
 
 if __name__ == "__main__":

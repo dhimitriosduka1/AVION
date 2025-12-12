@@ -123,6 +123,12 @@ def read_command_line():
     parser.add_argument('--device_ids', help='delimited list input', type=lambda s: [int(item) for item in s.split(',')])
     parser.add_argument("--feature_dir", type=str, default="./saved_features", help="model name")
     parser.add_argument("--query_max_len", type=int, default=30, help="max_len of query")
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="path to resume checkpoint",
+    )
 
     configs = parser.parse_args()
     return configs, parser
