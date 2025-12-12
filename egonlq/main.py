@@ -8,7 +8,8 @@
 """Main script to train/test models for Ego4D NLQ dataset."""
 import os
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import options
 import torch
@@ -32,6 +33,8 @@ from utils.data_loader import get_test_loader, get_train_loader
 
 import torch.nn.functional as F
 import avion.models.model_clip as model_clip
+import torch.cuda.amp as amp
+
 
 class Dataset(torch.utils.data.Dataset):
     def __init__(self, dataset):
@@ -95,123 +98,105 @@ def fused_feature_extract(args, dataset, feat_path, split="train_set"):
             pretrain_path=old_args.pretrain_path,
         )
 
+        # Remove the last projection layer and get the output of the backbone.
+        model.visual.image_projection = None
+        model.textual.text_projection = None
+
+        backbone_dim = model.visual.width
+
+        print(f"Vision backbone dim: {model.visual.width}")
+        print(f"Text backbone dim: {model.textual.width}")
+
         epoch = checkpoint["epoch"] if "epoch" in checkpoint else 0
         model.load_state_dict(checkpoint["state_dict"], strict=False)
         print("=> loaded resume checkpoint '{}' (epoch {})".format(args.resume, epoch))
     else:
         print("=> no checkpoint found at '{}'".format(args.resume))
 
-    # f = open("configs/nlq.json")
-    # config = json.load(f)
-
-    # video_params = {
-    #     "model": config["arch"]["args"]["video_params"]["model"],
-    #     "arch_config": config["arch"]["args"]["video_params"]["arch_config"],
-    #     "num_frames": config["arch"]["args"]["video_params"]["num_frames"],
-    #     "pretrained": True,
-    #     "time_init": config["arch"]["args"]["video_params"]["time_init"],
-    # }
-    # text_params = {
-    #     "model": config["arch"]["args"]["text_params"]["model"],
-    #     "pretrained": True,
-    #     "input": config["arch"]["args"]["text_params"]["input"],
-    # }
-    # projection_dim = config["arch"]["args"]["projection_dim"]
-    # load_checkpoint = args.model_name
-    # projection = "minimal"
-    # load_temporal_fix = "bilinear"
-    # task_names = "EgoNCE_ITM_MLM"
-    # norm_layer = None
-    # embed_dim = 768
-
-    # model = FrozenInTime(
-    #     video_params,
-    #     text_params,
-    #     projection_dim=projection_dim,
-    #     load_checkpoint=load_checkpoint,
-    #     projection=projection,
-    #     load_temporal_fix=load_temporal_fix,
-    #     task_names=task_names,
-    #     norm_layer=norm_layer,
-    #     embed_dim=embed_dim,
-    # )
-
     device = torch.device(args.cuda_base if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     model = nn.DataParallel(model, device_ids=args.device_ids)
     model.eval()
 
-    feat_path = os.path.join(feat_path, split.split("_")[0])
-    os.mkdir(feat_path)
+    feat_path = os.path.join(feat_path, f'{split.split("_")[0]}_test')
+    os.makedirs(feat_path, exist_ok=True)
 
-    with torch.no_grad():
-        for idx, batch in enumerate(train_loader):
+    b_s = 256
+    with amp.autocast(enabled=not old_args.disable_amp):
+        with torch.no_grad():
+            for idx, batch in enumerate(train_loader):
+                video_tensor = batch[0]
+                text_tensor = batch[1]
 
-            data = {
-                "video": batch[0][0].to(device),
-                "text": {
-                    "input_ids": batch[1]["input_ids"][0].to(device),
-                    "attention_mask": batch[1]["attention_mask"][0].to(device),
-                },
-            }
+                fused_video_features = torch.zeros(video_tensor.shape[0], backbone_dim)
 
-            projection_dim = 768
-            fused_video_features = torch.zeros(data["video"].shape[0], projection_dim)
-            b_s = 256
-
-            if data["video"].shape[0] % b_s == 0:
-                times = data["video"].shape[0] // b_s
-            else:
-                times = 1 + data["video"].shape[0] // b_s
-
-            for j in range(times):
-                start = j * b_s
-                if (j + 1) * b_s > data["video"].shape[0]:
-                    end = data["video"].shape[0]
+                if video_tensor.shape[0] % b_s == 0:
+                    times = video_tensor.shape[0] // b_s
                 else:
-                    end = (j + 1) * b_s
+                    times = 1 + video_tensor.shape[0] // b_s
 
-                video_length = end - start
+                for j in range(times):
+                    start = j * b_s
+                    end = min((j + 1) * b_s, video_tensor.shape[0])
 
-                data_batch = {
-                    "video": data["video"][start:end,],
-                    "text": {
-                        "input_ids": data["text"]["input_ids"][0:video_length,],
-                        "attention_mask": data["text"]["attention_mask"][
-                            0:video_length,
-                        ],
-                    },
+                    # [B_Chunk, Crops, Frames, C, H, W]
+                    video_chunk = video_tensor[start:end].to(device)
+                    b_chunk, crops, frames, c, h, w = video_chunk.shape
+
+                    # [B_Chunk * Crops, C, Frames, H, W]
+                    # Flatten Batch and Crops
+                    video_chunk = video_chunk.flatten(0, 1)
+
+                    # Permute C to dim 1
+                    video_chunk = video_chunk.permute(0, 2, 1, 3, 4)
+
+                    # We must repeat the text to match the video batch size.
+                    raw_input_ids = text_tensor[0].to(device)
+
+                    current_batch_size = video_chunk.shape[0]
+
+                    text_input_ids = raw_input_ids.unsqueeze(0).repeat(
+                        current_batch_size, 1
+                    )
+
+                    video_features, _, _ = model(video_chunk, text_input_ids)
+
+                    # We split the crops back out: [B_Chunk, Crops, Dim]
+                    video_features = video_features.view(b_chunk, crops, -1)
+
+                    # Average over crops -> [B_Chunk, Dim]
+                    video_features = video_features.mean(dim=1)
+
+                    # Store
+                    fused_video_features[start:end] = video_features.detach().cpu()
+
+                single_text_id = batch[1][0:1].to(device)
+
+                if hasattr(model, "module"):
+                    dual_text_features = model.module.encode_text(single_text_id)
+                else:
+                    dual_text_features = model.encode_text(single_text_id)
+
+                saved_feature_dict = {
+                    "fused_video_features": fused_video_features.detach().cpu(),
+                    "dual_text_features": dual_text_features.detach().cpu(),
+                    "sample_id": batch[2][0],
+                    "vid": batch[3][0],
+                    "s_time": batch[4][0],
+                    "e_time": batch[5][0],
+                    "duration": batch[6][0],
+                    "query": batch[7][0],
+                    "s_ind": batch[8][0],
+                    "e_ind": batch[9][0],
+                    "v_len": batch[10][0],
+                    "annotation_uid": batch[11][0],
+                    "query_idx": batch[12][0],
                 }
-                fused_video_features[start:end,] = model.forward(data_batch)
 
-            dual_text_features = model.module.compute_text_tokens(
-                {
-                    "input_ids": batch[1]["input_ids"][0][0:1].to(device),
-                    "attention_mask": batch[1]["attention_mask"][0][0:1].to(device),
-                },
-                is_proj=False,
-            )
-
-            saved_feature_dict = {
-                "fused_video_features": fused_video_features.detach().cpu(),
-                "dual_text_features": dual_text_features.detach().cpu(),
-                "sample_id": batch[2][0],
-                "vid": batch[3][0],
-                "s_time": batch[4][0],
-                "e_time": batch[5][0],
-                "duration": batch[6][0],
-                "query": batch[7][0],
-                "s_ind": batch[8][0],
-                "e_ind": batch[9][0],
-                "v_len": batch[10][0],
-                "annotation_uid": batch[11][0],
-                "query_idx": batch[12][0],
-                "text_token": {"attention_mask": batch[1]["attention_mask"][0][0:1]},
-            }
-
-            torch.save(
-                saved_feature_dict, os.path.join(feat_path, "feat_" + str(idx) + ".pt")
-            )
+                torch.save(
+                    saved_feature_dict,
+                    os.path.join(feat_path, "feat_" + str(idx) + ".pt"),
+                )
 
 
 def main(args, parser):
@@ -228,9 +213,8 @@ def main(args, parser):
         args.char_size = dataset.get("n_chars", -1)
         args.word_size = dataset.get("n_words", -1)
 
-
         # fused_feature_extract(args, dataset, feat_path, split="train_set")
-        fused_feature_extract(args, dataset, feat_path, split="val_set") 
+        fused_feature_extract(args, dataset, feat_path, split="val_set")
         # fused_feature_extract(args, dataset, feat_path, split="test_set")
 
     return
