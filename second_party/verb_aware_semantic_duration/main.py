@@ -253,7 +253,8 @@ def main():
     if is_main_process:
         print("Processing final durations and overlaps...")
         with open(args.input_path, "rb") as f:
-            raw_data = pickle.load(f)[:10000]
+            raw_data = pickle.load(f)
+
         df_final = pd.DataFrame(
             raw_data, columns=["video_id", "start", "end", "caption"]
         )
