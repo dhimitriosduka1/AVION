@@ -1,9 +1,9 @@
 #!/bin/bash -l
 
-#SBATCH -o /dais/fs/scratch/dduka/logs/avion/lavila_baseline_%A_%a_%x_%j_%N.out
-#SBATCH -e /dais/fs/scratch/dduka/logs/avion/lavila_baseline_%A_%a_%x_%j_%N.err
+#SBATCH -o /dais/fs/scratch/dduka/logs/avion/dual_encoder_pretrain_baseline_%A_%a_%x_%j_%N.out
+#SBATCH -e /dais/fs/scratch/dduka/logs/avion/dual_encoder_pretrain_baseline_%A_%a_%x_%j_%N.err
 
-#SBATCH -J lavila_baseline
+#SBATCH -J llm_2.2
 #SBATCH --time=23:59:59
 
 #SBATCH --nodes=1
@@ -14,8 +14,6 @@
 #SBATCH --gres=gpu:h200:4
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=1000000
-
-#SBATCH --array=0-1%1
 
 module purge
 micromamba activate avion_fa2
@@ -36,7 +34,7 @@ echo "GPUs per node: $SLURM_GPUS_ON_NODE"
 
 cd /u/dduka/project/AVION
 
-RUN_NAME=DAIS_LAVILA
+RUN_NAME=DAIS_DUAL_ENCODER_LLM_LEN_AUG_2.2
 EXP_PATH=/dais/fs/scratch/dduka/training_metadata/avion/$RUN_NAME
 
 mkdir -p $EXP_PATH
@@ -54,8 +52,6 @@ srun --cpu_bind=v --accel-bind=gn torchrun \
     --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
     --rdzv_backend=c10d \
     scripts/main_lavila_pretrain.py \
-    --train-metadata /dais/fs/scratch/dduka/databases/ego4d/ego4d_train.rephraser.no_punkt_top3.pkl \
-    --train-metadata-aux /dais/fs/scratch/dduka/databases/ego4d/ego4d_train.narrator_63690737.return_10.pkl \
     --use-flash-attn \
     --grad-checkpointing \
     --use-fast-conv1 \
@@ -67,4 +63,5 @@ srun --cpu_bind=v --accel-bind=gn torchrun \
     --wandb-run-name $RUN_NAME \
     --workers 32 \
     --prefetch-factor 4 \
+    --train-metadata /dais/fs/scratch/dduka/databases/ego4d/verb_aware/ego4d_train_verb_aware_2.2_original_clamped.pkl \
     --wandb-project-name "Verb Aware Semantic Duration"
