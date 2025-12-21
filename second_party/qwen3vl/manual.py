@@ -286,9 +286,12 @@ def main() -> None:
     processor = AutoProcessor.from_pretrained(args.model_path)
     model = Qwen3VLForConditionalGeneration.from_pretrained(
         args.model_path,
-        dtype="auto",
+        dtype=torch.bfloat16,
         device_map="auto",
+        attn_implementation="flash_attention_2",
     )
+
+    model.eval()
 
     dataset = Ego4DChunkedTemporalDataset(
         pkl_path=args.pkl_path,
@@ -361,9 +364,11 @@ def main() -> None:
                     **video_kwargs,
                 ).to(model.device)
 
-                generated_ids = model.generate(
-                    **inputs, max_new_tokens=int(args.max_new_tokens)
-                )
+                with torch.inference_mode():
+                    generated_ids = model.generate(
+                        **inputs, max_new_tokens=int(args.max_new_tokens)
+                    )
+               
                 gen_only = generated_ids[:, inputs["input_ids"].shape[1] :]
                 out = processor.batch_decode(
                     gen_only,
