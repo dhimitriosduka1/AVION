@@ -191,46 +191,36 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
 
 def build_prompt(*, caption: str, seed_start: float, seed_end: float) -> str:
     text_template = """\
-        You are given an egocentric (first-person) video. Your task is temporal localization for the captioned action.
+    TASK: Temporal localization in egocentric video.
 
-        Caption:
-        "{caption}"
+    ACTION TO LOCATE: "{caption}"
 
-        Seed timestamp, the center of the segment: {seed_center:.2f} seconds.
+    SEED WINDOW (approximate): {seed_start:.2f}s to {seed_end:.2f}s (use as starting point only, may be inaccurate).
 
-        What to do:
-        - Briefly describe the visible scene (very short).
-        - Find the tightest time interval that FULLY contains the action described by the caption.
-        - Use only visible evidence: the camera wearer's hands, manipulated objects, contact events, and object motion caused by the wearer.
-        - Do NOT assume the seed is correct; it is only a hint where to look.
+    ANALYSIS STEPS:
+    1. Watch the video and identify the camera wearer's hands throughout.
+    2. Find when the described action STARTS: the exact moment of first intentional movement toward the action (hand reaches, begins grasp, or object starts moving due to wearer).
+    3. Find when the action ENDS: the exact moment the action goal is achieved (object released/placed, hands withdraw, result is stable).
 
-        Boundary definitions:
-        - start = first moment the action clearly begins (reach/grasp begins OR object starts moving due to the wearer).
-        - end   = first moment the action is completed and the outcome is stable (release/placement completed; object comes to rest; hands disengage).
+    VISUAL CUES TO TRACK:
+    - Hand position and motion relative to target objects
+    - Object state changes (picked up, moved, opened, closed, placed)
+    - Contact events (hand touches object, object touches surface)
+    - Motion cessation (object comes to rest, hand stops moving)
 
-        STRICT OUTPUT RULES:
-        - Return ONLY valid JSON, then a newline, then the literal token END.
-        - No markdown, no comments, no trailing commas.
-        - Keep it short:
-        - scene_summary: <= 20 words
-        - notes: <= 20 words (or empty string)
-        - evidence: list of <= 3 short object strings (e.g., ["bowl", "counter", "hand"])
-        - start/end must be numbers in seconds (floats allowed).
+    CRITICAL RULES:
+    - Boundaries must be TIGHT: start at first evidence of action, end when action completes
+    - Do NOT include preparation or aftermath unless part of the described action
+    - If action spans multiple sub-actions, include the full sequence
+    - Times are relative to video start (0.0s = first frame)
 
-        JSON schema (exact keys):
-        scene_summary: string
-        caption: string
-        start: number
-        end: number
-        confidence: number (0.0 to 1.0)
-        evidence: list of strings
-        notes: string
-
-        JSON:
-    """
+    OUTPUT (JSON only, no explanation):
+    {{"scene_summary": "<20 words describing setting>", "caption": "{caption}", "start": <seconds>, "end": <seconds>, "confidence": <0.0-1.0>, "evidence": ["<object1>", "<object2>"], "notes": "<brief uncertainty if any>"}}
+    END"""
     return text_template.format(
         caption=caption,
-        seed_center=0.5 * (seed_start + seed_end),
+        seed_start=seed_start,
+        seed_end=seed_end,
     )
 
 
@@ -264,7 +254,7 @@ def main() -> None:
     ap.add_argument(
         "--pkl_path",
         type=str,
-        default="/dais/fs/scratch/dduka/databases/ego4d/ego4d_train.pkl",
+        default="/dais/fs/scratch/dduka/databases/ego4d/random_shift/ego4d_train_random_shift_2.1_2.1_1.0_42.pkl",
     )
     ap.add_argument(
         "--video_root",
@@ -368,7 +358,7 @@ def main() -> None:
                     generated_ids = model.generate(
                         **inputs, max_new_tokens=int(args.max_new_tokens)
                     )
-               
+
                 gen_only = generated_ids[:, inputs["input_ids"].shape[1] :]
                 out = processor.batch_decode(
                     gen_only,
