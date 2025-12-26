@@ -9,8 +9,13 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
+import torch.distributed as dist
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
+from tqdm import tqdm
+from collections import OrderedDict
 
 
 MODEL_PATH_DEFAULT = "Qwen/Qwen3-VL-8B-Instruct"
@@ -71,11 +76,9 @@ def concat_videos_lossless(video_paths: List[str], output_path: str) -> None:
     if not video_paths:
         raise ValueError("No video paths provided for concatenation.")
 
-    # Create a list file for ffmpeg
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         list_file_path = f.name
         for vp in video_paths:
-            # Escape single quotes for ffmpeg syntax
             safe_vp = vp.replace("'", "'\\''")
             f.write(f"file '{safe_vp}'\n")
 
@@ -89,8 +92,8 @@ def concat_videos_lossless(video_paths: List[str], output_path: str) -> None:
             "-i",
             list_file_path,
             "-c",
-            "copy",  # Lossless stream copy
-            "-y",  # Overwrite output
+            "copy",
+            "-y",
             "-hide_banner",
             "-loglevel",
             "error",
@@ -150,13 +153,10 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
         video_id, within_idx = self._index[idx]
         seg = self._groups[video_id][within_idx]
 
-        # Identify all chunks that overlap with the action
         chunk_ids = get_covering_chunk_ids(seg.start, seg.end, self.chunk_len_sec)
 
-        # Verify existence
         valid_chunk_ids = []
         valid_paths = []
-
         for cid in chunk_ids:
             vp = chunk_path(self.video_root, video_id, cid)
             if os.path.exists(vp):
@@ -171,7 +171,6 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
             )
 
         base_offset = float(valid_chunk_ids[0])
-
         seed_start_rel = seg.start - base_offset
         seed_end_rel = seg.end - base_offset
 
@@ -191,36 +190,34 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
 
 def build_prompt(*, caption: str, seed_start: float, seed_end: float) -> str:
     text_template = """\
-    TASK: Temporal localization in egocentric video.
+TASK: Temporal localization in egocentric video.
 
-    ACTION TO LOCATE: "{caption}"
+ACTION TO LOCATE: "{caption}"
 
-    SEED WINDOW (approximate): {seed_start:.2f}s to {seed_end:.2f}s (use as starting point only, may be inaccurate).
+SEED WINDOW (approximate): {seed_start:.2f}s to {seed_end:.2f}s (use as starting point only, may be inaccurate).
 
-    ANALYSIS STEPS:
-    1. Watch the video and identify the camera wearer's hands throughout.
-    2. Find when the described action STARTS: the exact moment of first intentional movement toward the action (hand reaches, begins grasp, or object starts moving due to wearer).
-    3. Find when the action ENDS: the exact moment the action goal is achieved (object released/placed, hands withdraw, result is stable).
+ANALYSIS STEPS:
+1. Watch the video and identify the camera wearer's hands throughout.
+2. Find when the described action STARTS: the exact moment of first intentional movement toward the action (hand reaches, begins grasp, or object starts moving due to wearer).
+3. Find when the action ENDS: the exact moment the action goal is achieved (object released/placed, hands withdraw, result is stable).
 
-    VISUAL CUES TO TRACK:
-    - Hand position and motion relative to target objects
-    - Object state changes (picked up, moved, opened, closed, placed)
-    - Contact events (hand touches object, object touches surface)
-    - Motion cessation (object comes to rest, hand stops moving)
+VISUAL CUES TO TRACK:
+- Hand position and motion relative to target objects
+- Object state changes (picked up, moved, opened, closed, placed)
+- Contact events (hand touches object, object touches surface)
+- Motion ends (object comes to rest, hand stops moving)
 
-    CRITICAL RULES:
-    - Boundaries must be TIGHT: start at first evidence of action, end when action completes
-    - Do NOT include preparation or aftermath unless part of the described action
-    - If action spans multiple sub-actions, include the full sequence
-    - Times are relative to video start (0.0s = first frame)
+CRITICAL RULES:
+- Boundaries must be TIGHT: start at first evidence of action, end when action completes
+- Do NOT include preparation or aftermath unless part of the described action
+- If action spans multiple sub-actions, include the full sequence
+- Times are relative to video start (0.0s = first frame)
 
-    OUTPUT (JSON only, no explanation):
-    {{"scene_summary": "<20 words describing setting>", "caption": "{caption}", "start": <seconds>, "end": <seconds>, "confidence": <0.0-1.0>, "evidence": ["<object1>", "<object2>"], "notes": "<brief uncertainty if any>"}}
-    END"""
+OUTPUT (JSON only, no explanation):
+{{"scene_summary": "<20 words describing setting>", "caption": "{caption}", "start": <seconds>, "end": <seconds>, "confidence": <0.0-1.0>, "evidence": ["<object1>", "<object2>"], "notes": "<brief uncertainty if any>"}}
+END"""
     return text_template.format(
-        caption=caption,
-        seed_start=seed_start,
-        seed_end=seed_end,
+        caption=caption, seed_start=seed_start, seed_end=seed_end
     )
 
 
@@ -249,6 +246,35 @@ def parse_json_until_end(text: str) -> Dict[str, Any]:
     return json.loads(s[start : end + 1])
 
 
+def init_distributed() -> Tuple[bool, int, int, int]:
+    """
+    Returns: (is_distributed, rank, world_size, local_rank)
+    """
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        dist.init_process_group(backend="nccl", init_method="env://")
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        torch.cuda.set_device(local_rank)
+        return True, rank, world_size, local_rank
+    return False, 0, 1, 0
+
+
+def gather_results(
+    all_local: List[Dict[str, Any]], distributed: bool, rank: int, world_size: int
+):
+    if not distributed:
+        return all_local
+    gathered: List[List[Dict[str, Any]]] = [None for _ in range(world_size)]
+    dist.all_gather_object(gathered, all_local)
+    if rank == 0:
+        merged: List[Dict[str, Any]] = []
+        for part in gathered:
+            merged.extend(part)
+        return merged
+    return None
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -271,16 +297,19 @@ def main() -> None:
     ap.add_argument("--max_new_tokens", type=int, default=2056)
     ap.add_argument("--output_path", type=str, default="results.json")
     ap.add_argument("--strict_exists", action="store_true")
+    ap.add_argument("--num_workers", type=int, default=0)
     args = ap.parse_args()
 
+    distributed, rank, world_size, local_rank = init_distributed()
+    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+
+    # Load model/processor per-rank onto its GPU (no device_map sharding for DDP-style multi-proc)
     processor = AutoProcessor.from_pretrained(args.model_path)
     model = Qwen3VLForConditionalGeneration.from_pretrained(
         args.model_path,
         dtype=torch.bfloat16,
-        device_map="auto",
         attn_implementation="flash_attention_2",
-    )
-
+    ).to(device)
     model.eval()
 
     dataset = Ego4DChunkedTemporalDataset(
@@ -292,29 +321,41 @@ def main() -> None:
         only_video_id=args.only_video_id,
     )
 
-    n = (
-        len(dataset)
-        if args.max_samples is None or args.max_samples < 0
-        else min(len(dataset), args.max_samples)
+    # Optionally cap total samples globally (not per-rank)
+    if args.max_samples is not None and args.max_samples >= 0:
+        # Truncate deterministically by wrapping with Subset indices [0:max_samples]
+        from torch.utils.data import Subset
+
+        dataset = Subset(dataset, list(range(min(len(dataset), int(args.max_samples)))))
+
+    sampler = (
+        DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=False)
+        if distributed
+        else None
     )
 
-    results = []
+    # batch_size=1 because each item is a video inference
+    loader = DataLoader(
+        dataset,
+        batch_size=1,
+        sampler=sampler,
+        shuffle=False if sampler is not None else False,
+        num_workers=int(args.num_workers),
+        pin_memory=True,
+        prefetch_factor=2,
+        collate_fn=lambda x: x[0],
+    )
 
-    # Use a temporary directory for merged videos to ensure cleanup
+    results_local: List[Dict[str, Any]] = []
+
     with tempfile.TemporaryDirectory() as temp_dir:
-        for i in range(n):
+        for j, item in enumerate(tqdm(loader)):
             try:
-                item = dataset[i]
-
-                # Logic to handle merging if multiple chunks are present
                 chunk_paths = item["chunk_paths"]
-
                 if len(chunk_paths) == 1:
-                    # No merge needed
                     current_video_path = chunk_paths[0]
                 else:
-                    # Merge needed
-                    merged_filename = f"merged_{item['video_id']}_{i}.mp4"
+                    merged_filename = f"merged_rank{rank}_{item['video_id']}_{j}.mp4"
                     merged_path = os.path.join(temp_dir, merged_filename)
                     concat_videos_lossless(chunk_paths, merged_path)
                     current_video_path = merged_path
@@ -352,7 +393,7 @@ def main() -> None:
                     return_tensors="pt",
                     do_resize=False,
                     **video_kwargs,
-                ).to(model.device)
+                ).to(device)
 
                 with torch.inference_mode():
                     generated_ids = model.generate(
@@ -372,7 +413,7 @@ def main() -> None:
                 pred_end = float(pred["end"])
                 base_offset = float(item["base_offset"])
 
-                results.append(
+                results_local.append(
                     {
                         "video_id": item["video_id"],
                         "caption": item["caption"],
@@ -391,17 +432,38 @@ def main() -> None:
                     }
                 )
 
-                # Optional: print progress
-                print(
-                    f"[{i}/{n}] Processed {item['video_id']} - {item['caption'][:30]}..."
-                )
+                if rank == 0 and (j % 10 == 0):
+                    print(
+                        f"[rank0] processed {j} samples on rank0 (world_size={world_size})"
+                    )
 
             except Exception as e:
-                print(f"Error processing item {i}: {e}")
-                continue
+                # Keep going; store an error record (optional)
+                results_local.append(
+                    {
+                        "video_id": item.get("video_id", ""),
+                        "caption": item.get("caption", ""),
+                        "error": str(e),
+                    }
+                )
 
-    with open(args.output_path, "w") as f:
-        json.dump(results, f, indent=2)
+    merged = gather_results(results_local, distributed, rank, world_size)
+
+    if rank == 0:
+        # Optional: stable order for final file
+        merged.sort(
+            key=lambda r: (
+                r.get("video_id", ""),
+                float(r.get("pred_start_global", 1e18)),
+            )
+        )
+        with open(args.output_path, "w") as f:
+            json.dump(merged, f, indent=2)
+        print(f"Wrote {len(merged)} results to {args.output_path}")
+
+    if distributed:
+        dist.barrier()
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
