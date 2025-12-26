@@ -14,7 +14,7 @@
 #SBATCH --mem=1000000
 
 # Create a job array
-#SBATCH --array=0-999
+#SBATCH --array=0-999%15
 
 module purge
 eval "$(micromamba shell hook --shell bash)"

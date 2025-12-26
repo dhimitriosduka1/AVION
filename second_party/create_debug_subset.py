@@ -24,6 +24,11 @@ print(f"Number of unique videos: {len(video_dict)}")
 sorted_video_ids = sorted(video_dict.keys())
 target_video_ids = sorted_video_ids[:1000]
 
+# Write the target_video_ids to a file
+with open("target_video_ids.txt", "w") as f:
+    for video_id in target_video_ids:
+        f.write(f"{video_id}\n")
+
 print(f"Selected {len(target_video_ids)} videos for debug set.")
 
 # 4. Flatten the selected videos back into a list of samples

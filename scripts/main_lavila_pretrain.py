@@ -238,7 +238,7 @@ def get_args_parser():
         "--num-clips", default=1, type=int, help="number of clips for testing"
     )
 
-    # For the dataloader    
+    # For the dataloader
     parser.add_argument(
         "--prefetch-factor", default=4, type=int, help="Number of batches to prefetch"
     )
@@ -587,7 +587,7 @@ def main(args):
         pin_memory=True,
         sampler=train_sampler,
         drop_last=True,
-        prefetch_factor=args.prefetch_factor
+        prefetch_factor=args.prefetch_factor,
     )
 
     print("len(train_loader) = {}".format(len(train_loader)))

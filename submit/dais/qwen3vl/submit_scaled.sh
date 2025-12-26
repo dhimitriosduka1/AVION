@@ -14,7 +14,7 @@
 #SBATCH --mem=1000000
 
 # Create a job array
-#SBATCH --array=0-999
+#SBATCH --array=0-499%10
 
 module purge
 eval "$(micromamba shell hook --shell bash)"
@@ -24,7 +24,7 @@ echo "Job index: $SLURM_ARRAY_TASK_ID"
 
 # --- FIX START ---
 # Option 1: Load into array (Use parentheses)
-video_ids=($(cat /u/dduka/project/AVION/second_party/target_video_ids.txt))
+video_ids=($(cat /u/dduka/project/AVION/data/video_ids/dir_list_01.txt))
 video_id=${video_ids[$SLURM_ARRAY_TASK_ID]}
 
 # Check if video_id is empty (safety check)

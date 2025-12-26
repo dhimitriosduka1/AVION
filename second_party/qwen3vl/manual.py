@@ -342,7 +342,6 @@ def main() -> None:
         shuffle=False if sampler is not None else False,
         num_workers=int(args.num_workers),
         pin_memory=True,
-        prefetch_factor=2,
         collate_fn=lambda x: x[0],
     )
 
