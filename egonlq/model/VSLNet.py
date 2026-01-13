@@ -89,12 +89,18 @@ class VSLNet(nn.Module):
         )
 
         # If pretrained transformer, initialize_parameters and load.
-        if self.configs.predictor == 'EgoVLP':
-            # Project back from BERT to dim.
-            self.query_affine = nn.Linear(768, configs.dim)
-            self.init_parameters()
-        else:
-            raise NotImplementedError("Preditor should be EgoVLP")
+        # self.query_affine = nn.Linear(768, configs.dim)
+        
+        # Fix me
+        self.query_affine = nn.Linear(512, configs.dim)
+        self.init_parameters()
+        
+        # if self.configs.predictor == 'EgoVLP':
+        #     # Project back from BERT to dim.
+        #     self.query_affine = nn.Linear(768, configs.dim)
+        #     self.init_parameters()
+        # else:
+        #     raise NotImplementedError("Preditor should be EgoVLP")
 
     def init_parameters(self):
         def init_weights(m):
@@ -113,10 +119,12 @@ class VSLNet(nn.Module):
 
     def forward(self, video_features, v_mask, q_mask, dual_text_feature):
         video_features = self.video_affine(video_features)
-        if self.configs.predictor == 'EgoVLP':
-            query_features = self.query_affine(dual_text_feature)
-        else:
-            raise NotImplementedError("Preditor should be EgoVLP")
+        query_features = self.query_affine(dual_text_feature)
+        
+        # if self.configs.predictor == 'EgoVLP':
+        #     query_features = self.query_affine(dual_text_feature)
+        # else:
+        #     raise NotImplementedError("Preditor should be EgoVLP")
 
         query_features = self.feature_encoder(query_features, mask=q_mask)
         video_features = self.feature_encoder(video_features, mask=v_mask)

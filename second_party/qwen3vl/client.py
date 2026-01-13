@@ -6,12 +6,14 @@ import os
 import pickle
 import subprocess
 import tempfile
+import time
+import threading
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 from openai import AsyncOpenAI
-from tqdm.asyncio import tqdm_asyncio
+from tqdm.asyncio import tqdm
 
 from prompts import v1, v2
 
@@ -21,7 +23,7 @@ from prompts import v1, v2
 
 MODEL_NAME = "Qwen/Qwen3-VL-8B-Instruct"
 CHUNK_LEN_SEC_DEFAULT = 15.0
-DEFAULT_API_URL = "http://daisg101:30000/v1"
+DEFAULT_API_URL = "http://daisg107:30000/v1"
 
 # -----------------------------------------------------------------------------
 # Helper Classes & Functions
@@ -164,10 +166,19 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
 
         segments = [as_segment(r) for r in rows]
         grouped: Dict[str, List[Segment]] = {}
+
+        # --- MODIFICATION START: Filter Logic with Validation ---
         for s in segments:
             if only_video_id is not None and s.video_id != only_video_id:
                 continue
             grouped.setdefault(s.video_id, []).append(s)
+
+        if only_video_id is not None and len(grouped) == 0:
+            raise ValueError(
+                f"DEBUG ERROR: Video ID '{only_video_id}' was requested, "
+                f"but it was not found in the loaded metadata ({len(segments)} total segments)."
+            )
+        # --- MODIFICATION END ---
 
         for vid in grouped:
             grouped[vid].sort(key=lambda x: x.start)
@@ -256,75 +267,120 @@ def build_prompt(
 # -----------------------------------------------------------------------------
 
 
-async def process_sample(
-    client: AsyncOpenAI, sem: asyncio.Semaphore, sample: Dict[str, Any]
-) -> Dict[str, Any]:
+async def process_sample(client: AsyncOpenAI, sample: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Processes a single sample. Note: Semaphore is now handled by the worker logic.
+    """
+    start_time = time.perf_counter()
+    try:
+        video_path_to_send = sample["video_path"]
+        prompt_text = build_prompt(
+            caption=sample["caption"],
+            seed_start=sample["seed_start"],
+            seed_end=sample["seed_end"],
+        )
 
-    async with sem:
+        response = await client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt_text},
+                        {
+                            "type": "video_url",
+                            "video_url": {"url": video_path_to_send},
+                        },
+                    ],
+                }
+            ],
+            max_tokens=256,
+            temperature=0.7,
+        )
+
+        raw_content = response.choices[0].message.content
+        latency = time.perf_counter() - start_time
+
+        pred = parse_json_until_end(raw_content)
+
+        pred_start = float(pred["start"])
+        pred_end = float(pred["end"])
+        base_offset = float(sample["base_offset"])
+
+        return {
+            "status": "success",
+            "video_id": sample["video_id"],
+            "caption": sample["caption"],
+            "chunk_ids": sample["chunk_ids"],
+            "base_offset": base_offset,
+            "seed_start_rel": sample["seed_start"],
+            "seed_end_rel": sample["seed_end"],
+            "pred_start_rel": pred_start,
+            "pred_end_rel": pred_end,
+            "pred_start_global": pred_start + base_offset,
+            "pred_end_global": pred_end + base_offset,
+            "confidence": float(pred.get("confidence", 0.0)),
+            "scene_summary": pred.get("scene_summary", ""),
+            "evidence": pred.get("evidence", []),
+            "notes": pred.get("notes", ""),
+            "raw_response": raw_content,
+            "latency_sec": latency,
+        }
+
+    except Exception as e:
+        latency = time.perf_counter() - start_time
+        return {
+            "status": "error",
+            "video_id": sample.get("video_id", "unknown"),
+            "caption": sample.get("caption", "unknown"),
+            "error": str(e),
+            "latency_sec": latency,
+            "raw_response": locals().get("raw_content", ""),
+        }
+
+
+# -----------------------------------------------------------------------------
+# Producer / Consumer Logic
+# -----------------------------------------------------------------------------
+
+
+def dataset_producer(loader, queue: asyncio.Queue, loop: asyncio.AbstractEventLoop):
+    """
+    Runs in a separate thread. Iterates over the DataLoader (blocking)
+    and schedules putting items into the async queue.
+    """
+    try:
+        for sample in loader:
+            # This is thread-safe scheduling into the event loop
+            future = asyncio.run_coroutine_threadsafe(queue.put(sample), loop)
+            # Wait for the item to be accepted by the queue (respects maxsize)
+            future.result()
+    finally:
+        # Signal end of stream
+        asyncio.run_coroutine_threadsafe(queue.put(None), loop).result()
+
+
+async def worker(
+    client: AsyncOpenAI, queue: asyncio.Queue, results_list: List[Dict], pbar: tqdm
+):
+    """
+    Continuously pulls from the queue and processes samples.
+    """
+    while True:
+        sample = await queue.get()
+        if sample is None:
+            # End of stream signal
+            queue.task_done()
+            # Propagate None for other workers to exit
+            await queue.put(None)
+            break
+
         try:
-            # Merging logic removed; expects valid video_path from dataset
-            video_path_to_send = sample["video_path"]
-
-            # 2. Build Prompt
-            prompt_text = build_prompt(
-                caption=sample["caption"],
-                seed_start=sample["seed_start"],
-                seed_end=sample["seed_end"],
-            )
-
-            # 3. Call SGLang API
-            response = await client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt_text},
-                            {
-                                "type": "video_url",
-                                "video_url": {"url": video_path_to_send},
-                            },
-                        ],
-                    }
-                ],
-                max_tokens=256,
-                temperature=0.7,
-            )
-
-            raw_content = response.choices[0].message.content
-
-            # 4. Parse Result
-            pred = parse_json_until_end(raw_content)
-
-            pred_start = float(pred["start"])
-            pred_end = float(pred["end"])
-            base_offset = float(sample["base_offset"])
-
-            # 5. Format Output
-            return {
-                "video_id": sample["video_id"],
-                "caption": sample["caption"],
-                "chunk_ids": sample["chunk_ids"],
-                "base_offset": base_offset,
-                "seed_start_rel": sample["seed_start"],
-                "seed_end_rel": sample["seed_end"],
-                "pred_start_rel": pred_start,
-                "pred_end_rel": pred_end,
-                "pred_start_global": pred_start + base_offset,
-                "pred_end_global": pred_end + base_offset,
-                "confidence": float(pred.get("confidence", 0.0)),
-                "scene_summary": pred.get("scene_summary", ""),
-                "evidence": pred.get("evidence", []),
-                "notes": pred.get("notes", ""),
-                "raw_response": raw_content,
-            }
-
-        except Exception as e:
-            return {
-                "video_id": sample.get("video_id", "unknown"),
-                "caption": sample.get("caption", "unknown"),
-                "error": str(e),
-            }
+            res = await process_sample(client, sample)
+            results_list.append(res)
+        finally:
+            pbar.update(1)
+            queue.task_done()
 
 
 # -----------------------------------------------------------------------------
@@ -348,12 +404,19 @@ async def main():
     parser.add_argument("--output_path", type=str, default="results_sglang.json")
     parser.add_argument("--max_samples", type=int, default=-1)
     parser.add_argument(
-        "--concurrency", type=int, default=16, help="Max concurrent API requests"
+        "--concurrency", type=int, default=64, help="Max concurrent API requests"
     )
     parser.add_argument(
         "--num_workers", type=int, default=8, help="Workers for ffmpeg merging"
     )
-    parser.add_argument("--only_video_id", type=str, default=None)
+    # --- MODIFIED ARGUMENT HELP ---
+    parser.add_argument(
+        "--only_video_id",
+        type=str,
+        default=None,
+        help="Debug: Only process this specific video ID. Raises error if ID not found.",
+    )
+    # ------------------------------
     parser.add_argument("--strict_exists", action="store_true")
     parser.add_argument("--fps", type=int, default=8)
     args = parser.parse_args()
@@ -362,62 +425,95 @@ async def main():
     print(f"Connecting to SGLang at {args.api_url}")
     client = AsyncOpenAI(base_url=args.api_url, api_key="EMPTY")
 
-    # 2. Setup Temporary Directory for Merges
-    # We use a context manager here so merged files are cleaned up after the run.
+    # --- ADDED: Debug logging ---
+    if args.only_video_id:
+        print(f"\n!!! DEBUG MODE ACTIVE !!!")
+        print(f"Filtering dataset for single Video ID: {args.only_video_id}\n")
+
     with tempfile.TemporaryDirectory() as temp_dir_path:
         print(f"Using temp dir for merged videos: {temp_dir_path}")
 
-        # 3. Setup Dataset
-        dataset = Ego4DChunkedTemporalDataset(
-            pkl_path=args.pkl_path,
-            video_root=args.video_root,
-            merge_root=temp_dir_path,  # Pass temp path to dataset
-            fps=args.fps,
-            chunk_len_sec=CHUNK_LEN_SEC_DEFAULT,
-            strict_exists=args.strict_exists,
-            only_video_id=args.only_video_id,
-        )
+        # 2. Setup Dataset
+        try:
+            dataset = Ego4DChunkedTemporalDataset(
+                pkl_path=args.pkl_path,
+                video_root=args.video_root,
+                merge_root=temp_dir_path,
+                fps=args.fps,
+                chunk_len_sec=CHUNK_LEN_SEC_DEFAULT,
+                strict_exists=args.strict_exists,
+                only_video_id=args.only_video_id,
+            )
+        except ValueError as e:
+            print(f"\n[Error] Dataset Initialization Failed: {e}")
+            return
 
         total_len = len(dataset)
         if args.max_samples > 0:
             total_len = min(total_len, args.max_samples)
-            # Subset the dataset if needed
             dataset = torch.utils.data.Subset(dataset, range(total_len))
 
-        print(f"Processing {total_len} samples.")
+        print(f"Dataset Size: {total_len}")
 
-        # 4. Create DataLoader
-        # Because __getitem__ now runs ffmpeg (heavy I/O), we use a DataLoader with
-        # multiple workers to prepare data in the background while the async loop processes results.
-        # batch_size=1 is used because process_sample expects one item.
+        # 3. Setup DataLoader
         loader = torch.utils.data.DataLoader(
             dataset,
             batch_size=1,
             num_workers=args.num_workers,
             shuffle=False,
-            # Simple collate to remove the batch dimension added by DataLoader
             collate_fn=lambda x: x[0],
         )
 
-        sem = asyncio.Semaphore(args.concurrency)
-        tasks = []
+        # 4. Initialize Queue and Progress Bar
+        queue = asyncio.Queue(maxsize=args.concurrency * 2)
+        results = []
 
-        # 5. Processing Loop
-        # We iterate the loader. This triggers ffmpeg merging in worker processes.
-        # We immediately spawn async tasks for the ready samples.
-        print(f"Starting async processing...")
-        for sample in loader:
-            tasks.append(process_sample(client, sem, sample))
+        print(f"Starting processing with {args.concurrency} workers...")
+        pbar = tqdm(total=total_len, desc="Processing")
 
-        results = await tqdm_asyncio.gather(*tasks)
+        # 5. Start Producer in a separate Thread
+        loop = asyncio.get_running_loop()
+        producer_thread = threading.Thread(
+            target=dataset_producer, args=(loader, queue, loop), daemon=True
+        )
+        producer_thread.start()
 
-    # 6. Save Results
-    successes = [r for r in results if "error" not in r]
-    errors = [r for r in results if "error" in r]
+        # 6. Start Consumers (Workers)
+        workers = [
+            asyncio.create_task(worker(client, queue, results, pbar))
+            for _ in range(args.concurrency)
+        ]
 
-    print(f"\nProcessing complete.")
-    print(f"Success: {len(successes)}")
-    print(f"Errors: {len(errors)}")
+        # 7. Wait for workers to finish
+        await asyncio.gather(*workers)
+
+        # Close progress bar
+        pbar.close()
+        producer_thread.join()
+
+    # 8. Post-Processing & Reporting
+    successes = [r for r in results if r["status"] == "success"]
+    errors = [r for r in results if r["status"] == "error"]
+
+    avg_latency = (
+        sum(r["latency_sec"] for r in results) / len(results) if results else 0.0
+    )
+    success_rate = (len(successes) / len(results) * 100) if results else 0.0
+
+    print("\n" + "=" * 40)
+    print("       PROCESSING SUMMARY")
+    print("=" * 40)
+    print(f"Total Samples  : {len(results)}")
+    print(f"Successes      : {len(successes)}")
+    print(f"Errors         : {len(errors)}")
+    print(f"Success Rate   : {success_rate:.2f}%")
+    print(f"Avg Latency    : {avg_latency:.2f} sec/req")
+    print("=" * 40)
+
+    if errors:
+        print("\nTop 5 Error Examples:")
+        for i, err in enumerate(errors[:5]):
+            print(f"{i+1}. Vid: {err.get('video_id')} | Err: {err.get('error')}")
 
     results.sort(key=lambda x: (x.get("video_id", ""), x.get("pred_start_global", 0)))
 

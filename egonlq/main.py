@@ -118,7 +118,7 @@ def fused_feature_extract(args, dataset, feat_path, split="train_set"):
     model = nn.DataParallel(model, device_ids=args.device_ids)
     model.eval()
 
-    feat_path = os.path.join(feat_path, f'{split.split("_")[0]}_test')
+    feat_path = os.path.join(feat_path, f'{split.split("_")[0]}')
     os.makedirs(feat_path, exist_ok=True)
 
     b_s = 256
@@ -177,6 +177,8 @@ def fused_feature_extract(args, dataset, feat_path, split="train_set"):
                 else:
                     dual_text_features = model.encode_text(single_text_id)
 
+                attention_mask = (single_text_id != 0).long()
+
                 saved_feature_dict = {
                     "fused_video_features": fused_video_features.detach().cpu(),
                     "dual_text_features": dual_text_features.detach().cpu(),
@@ -191,6 +193,7 @@ def fused_feature_extract(args, dataset, feat_path, split="train_set"):
                     "v_len": batch[10][0],
                     "annotation_uid": batch[11][0],
                     "query_idx": batch[12][0],
+                    "text_token": {"attention_mask": attention_mask.cpu()},
                 }
 
                 torch.save(
@@ -213,11 +216,9 @@ def main(args, parser):
         args.char_size = dataset.get("n_chars", -1)
         args.word_size = dataset.get("n_words", -1)
 
-        # fused_feature_extract(args, dataset, feat_path, split="train_set")
+        fused_feature_extract(args, dataset, feat_path, split="train_set")
         fused_feature_extract(args, dataset, feat_path, split="val_set")
-        # fused_feature_extract(args, dataset, feat_path, split="test_set")
-
-    return
+        fused_feature_extract(args, dataset, feat_path, split="test_set")
 
     train_loader = get_train_loader(
         glob(os.path.join(feat_path, "train") + "/*.pt"), args=args
@@ -241,170 +242,137 @@ def main(args, parser):
     # Device configuration
     device = torch.device(args.cuda_base if torch.cuda.is_available() else "cpu")
 
-    # create model dir
-    # home_dir = os.path.join(
-    #    args.model_dir,
-    #    "_".join(
-    #        [
-    #           args.model_name,
-    #            args.task,
-    #            args.fv,
-    #            str(args.max_pos_len),
-    #            args.predictor,
-    #        ]
-    #    ),
-    # )
-    # if args.suffix is not None:
-    #    home_dir = home_dir + "_" + args.suffix
-    # model_dir = os.path.join(home_dir, "model")
+    eval_period = num_train_batches // 2
+    model = VSLNet(configs=args).to(device)
 
-    # train and test
+    optimizer, scheduler = build_optimizer_and_scheduler(model, configs=args)
+    best_metric = -1.0
 
-    if args.mode.lower() == "train":
-        eval_period = num_train_batches // 2
-        model = VSLNet(configs=args).to(device)
+    new_save_dir = (
+        "./saved_nlq_results/" + str(args.model_name).split("/")[-1].split(".")[0]
+    )
 
-        optimizer, scheduler = build_optimizer_and_scheduler(model, configs=args)
-        best_metric = -1.0
+    if not os.path.exists(new_save_dir):
+        os.mkdir(new_save_dir)
 
-        new_save_dir = (
-            "./saved_nlq_results/" + str(args.model_name).split("/")[-1].split(".")[0]
-        )
-        if not os.path.exists(new_save_dir):
-            os.mkdir(new_save_dir)
+    score_writer = open(
+        os.path.join(
+            new_save_dir,
+            "eval_results_"
+            + str(args.max_pos_len)
+            + "_"
+            + str(args.batch_size)
+            + "_"
+            + str(args.init_lr)
+            + ".txt",
+        ),
+        mode="w",
+        encoding="utf-8",
+    )
+    print("start training...", flush=True)
 
-        score_writer = open(
-            os.path.join(
-                new_save_dir,
-                "eval_results_"
-                + str(args.max_pos_len)
-                + "_"
-                + str(args.batch_size)
-                + "_"
-                + str(args.init_lr)
-                + ".txt",
-            ),
-            mode="w",
-            encoding="utf-8",
-        )
-        print("start training...", flush=True)
+    global_step = 0
+    best_r1_iou03 = 0
 
-        global_step = 0
-        best_r1_iou03 = 0
+    assert args.predictor == "AVION"
+    for epoch in range(args.epochs):
+        model.train()
+        for _, data in enumerate(train_loader):
+            global_step += 1
+            (
+                _,
+                vfeats,
+                vfeat_lens,
+                dual_text_feature,
+                s_labels,
+                e_labels,
+                h_labels,
+                query_attention_mask
+            ) = data
+            # prepare features
+            vfeats, vfeat_lens = vfeats.to(device), vfeat_lens.to(device)
 
-        for epoch in range(args.epochs):
-            model.train()
-            for _, data in enumerate(train_loader):
-                global_step += 1
-                (
-                    _,
-                    vfeats,
-                    vfeat_lens,
-                    dual_text_feature,
-                    s_labels,
-                    e_labels,
-                    h_labels,
-                    query_attention_mask,
-                ) = data
-                # prepare features
-                vfeats, vfeat_lens = vfeats.to(device), vfeat_lens.to(device)
+            dual_text_feature = dual_text_feature.to(device)
+            s_labels, e_labels, h_labels = (
+                s_labels.to(device),
+                e_labels.to(device),
+                h_labels.to(device),
+            )
+            query_attention_mask = query_attention_mask.to(device)
+            query_mask = query_attention_mask
 
-                dual_text_feature = dual_text_feature.to(device)
-                s_labels, e_labels, h_labels = (
-                    s_labels.to(device),
-                    e_labels.to(device),
-                    h_labels.to(device),
+            # generate mask
+            video_mask = convert_length_to_mask(vfeat_lens).to(device)
+            # compute logits
+            h_score, start_logits, end_logits = model(
+                vfeats, video_mask, query_mask, dual_text_feature
+            )
+
+            # compute loss
+            highlight_loss = model.compute_highlight_loss(h_score, h_labels, video_mask)
+            loc_loss = model.compute_loss(start_logits, end_logits, s_labels, e_labels)
+            total_loss = loc_loss + args.highlight_lambda * highlight_loss
+
+            print(total_loss)
+            # total_loss = loc_loss
+
+            # compute and apply gradients
+            optimizer.zero_grad()
+            total_loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), args.clip_norm)
+
+            optimizer.step()
+            scheduler.step()
+
+            # evaluate
+            if global_step % eval_period == 0 or global_step % num_train_batches == 0:
+                model.eval()
+                print(f"\nEpoch: {epoch + 1:2d} | Step: {global_step:5d}", flush=True)
+
+                # Evaluate on val, keep the top 3 checkpoints.
+                results, mIoU, score_str = eval_test(
+                    model=model,
+                    data_loader=val_loader,
+                    device=device,
+                    mode="val",
+                    epoch=epoch + 1,
+                    global_step=global_step,
+                    gt_json_path=args.eval_gt_json,
+                    configs=args,
                 )
-                query_attention_mask = query_attention_mask.to(device)
 
-                if args.predictor == "EgoVLP":
-                    # generate mask
-                    query_mask = query_attention_mask
-
-                else:
-                    raise NotImplementedError("predictor should be EgoVLP")
-
-                # generate mask
-                video_mask = convert_length_to_mask(vfeat_lens).to(device)
-                # compute logits
-                h_score, start_logits, end_logits = model(
-                    vfeats, video_mask, query_mask, dual_text_feature
-                )
-
-                # compute loss
-                highlight_loss = model.compute_highlight_loss(
-                    h_score, h_labels, video_mask
-                )
-                loc_loss = model.compute_loss(
-                    start_logits, end_logits, s_labels, e_labels
-                )
-                total_loss = loc_loss + args.highlight_lambda * highlight_loss
-
-                print(total_loss)
-                # total_loss = loc_loss
-
-                # compute and apply gradients
-                optimizer.zero_grad()
-                total_loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), args.clip_norm)
-
-                optimizer.step()
-                scheduler.step()
-
-                # evaluate
-                if (
-                    global_step % eval_period == 0
-                    or global_step % num_train_batches == 0
-                ):
-                    model.eval()
-                    print(
-                        f"\nEpoch: {epoch + 1:2d} | Step: {global_step:5d}", flush=True
+                if best_r1_iou03 < results[0][0]:
+                    best_r1_iou03 = results[0][0]
+                    best_score_str = score_str
+                    epoch_step = (
+                        "Best Epoch: "
+                        + str(epoch + 1)
+                        + ", Best Step: "
+                        + str(global_step)
                     )
 
-                    # Evaluate on val, keep the top 3 checkpoints.
-                    results, mIoU, score_str = eval_test(
-                        model=model,
-                        data_loader=val_loader,
-                        device=device,
-                        mode="val",
-                        epoch=epoch + 1,
-                        global_step=global_step,
-                        gt_json_path=args.eval_gt_json,
-                        configs=args,
-                    )
+                print(score_str, flush=True)
+                score_writer.write(score_str)
+                score_writer.flush()
+                # Recall@1, 0.3 IoU overlap --> best metric.
+                if results[0][0] >= best_metric:
+                    best_metric = results[0][0]
+                #    torch.save(
+                #        model.state_dict(),
+                #        os.path.join(
+                #            model_dir,
+                #            "{}_{}.t7".format(configs.model_name, global_step),
+                #        ),
+                #    )
+                #    # only keep the top-3 model checkpoints
+                #    filter_checkpoints(model_dir, suffix="t7", max_to_keep=3)
+                model.train()
 
-                    if best_r1_iou03 < results[0][0]:
-                        best_r1_iou03 = results[0][0]
-                        best_score_str = score_str
-                        epoch_step = (
-                            "Best Epoch: "
-                            + str(epoch + 1)
-                            + ", Best Step: "
-                            + str(global_step)
-                        )
-
-                    print(score_str, flush=True)
-                    score_writer.write(score_str)
-                    score_writer.flush()
-                    # Recall@1, 0.3 IoU overlap --> best metric.
-                    if results[0][0] >= best_metric:
-                        best_metric = results[0][0]
-                    #    torch.save(
-                    #        model.state_dict(),
-                    #        os.path.join(
-                    #            model_dir,
-                    #            "{}_{}.t7".format(configs.model_name, global_step),
-                    #        ),
-                    #    )
-                    #    # only keep the top-3 model checkpoints
-                    #    filter_checkpoints(model_dir, suffix="t7", max_to_keep=3)
-                    model.train()
-
-        print("=" * 50)
-        print(epoch_step + "\n" + best_score_str, flush=True)
-        score_writer.write(epoch_step + "\n" + best_score_str)
-        score_writer.flush()
-        score_writer.close()
+    print("=" * 50)
+    print(epoch_step + "\n" + best_score_str, flush=True)
+    score_writer.write(epoch_step + "\n" + best_score_str)
+    score_writer.flush()
+    score_writer.close()
 
 
 if __name__ == "__main__":

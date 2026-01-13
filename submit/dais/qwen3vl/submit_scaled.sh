@@ -2,7 +2,7 @@
 #SBATCH -o /dais/fs/scratch/dduka/logs/avion/ego4d_%A_%a.out
 #SBATCH -e /dais/fs/scratch/dduka/logs/avion/ego4d_%A_%a.err
 
-#SBATCH -J ego4d_refine
+#SBATCH -J 14
 #SBATCH --time=01:59:00
 
 #SBATCH --nodes=1
@@ -24,7 +24,7 @@ echo "Job index: $SLURM_ARRAY_TASK_ID"
 
 # --- FIX START ---
 # Option 1: Load into array (Use parentheses)
-video_ids=($(cat /u/dduka/project/AVION/data/video_ids/dir_list_01.txt))
+video_ids=($(cat /u/dduka/project/AVION/data/video_ids/dir_list_14.txt))
 video_id=${video_ids[$SLURM_ARRAY_TASK_ID]}
 
 # Check if video_id is empty (safety check)

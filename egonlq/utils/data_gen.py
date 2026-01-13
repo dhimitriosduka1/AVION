@@ -38,14 +38,13 @@ class EpisodicNLQProcessor:
         self.num_frame = self.config["data_loader"]["args"]["video_params"][
             "num_frames"
         ]
-        
+
         # Build tokenizer
         self.tokenizer = partial(tokenize, context_length=context_length)
         self.transforms = init_video_transform_dict()["test"]
 
     def reset_idx_counter(self):
         self.idx_counter = 0
-
 
     def create_meta_dict(self, split):
         split_files = {
@@ -79,11 +78,9 @@ class EpisodicNLQProcessor:
 
         return meta_dict
 
-
     def process_data_tan(self, data, scope, args):
         results = []
         meta_dict_scope = self.create_meta_dict(scope)
-
 
         assert args.predictor == "AVION", "Only AVION predictor is supported currently"
 
@@ -104,9 +101,7 @@ class EpisodicNLQProcessor:
                 start_time = max(0.0, float(timestamp[0]) / fps)
                 end_time = min(float(timestamp[1]) / fps, duration)
 
-                text = self.tokenizer(
-                    sentence.strip().lower()
-                )[0]
+                text = self.tokenizer(sentence.strip().lower())[0]
 
                 record = {
                     "sample_id": self.idx_counter,
@@ -130,7 +125,6 @@ class EpisodicNLQProcessor:
 
         return results
 
-    
     def convert(self, args):
         predictor = args.predictor
         self._predictor = predictor
@@ -140,6 +134,11 @@ class EpisodicNLQProcessor:
         train_data = load_json(os.path.join("jsons", "train.json"))
         val_data = load_json(os.path.join("jsons", "val.json"))
         test_data = load_json(os.path.join("jsons", "test.json"))
+
+        # Create subsets of 100 elements for each data
+        train_data = dict(list(train_data.items())[:10])
+        val_data = dict(list(val_data.items())[:10])
+        test_data = dict(list(test_data.items())[:10])
 
         # process data
         train_set = self.process_data_tan(train_data, scope="train", args=args)
@@ -204,13 +203,17 @@ def _get_video_text_feats(meta_dict_scope, clip_uid, num_frames, transforms, dat
         fps = 1.87
         video_fp, _ = _get_video_path(meta_dict_scope[clip_uid]["video_uid"], data_dir)
         imgs, idxs = read_frames_decord_start_end(
-            video_fp, 
-            meta_dict_scope[clip_uid]["video_start"] * 30, 
+            video_fp,
+            meta_dict_scope[clip_uid]["video_start"] * 30,
             meta_dict_scope[clip_uid]["video_end"] * 30,
-            (meta_dict_scope[clip_uid]["video_end"] - meta_dict_scope[clip_uid]["video_start"]) * fps * num_frames
+            (
+                meta_dict_scope[clip_uid]["video_end"]
+                - meta_dict_scope[clip_uid]["video_start"]
+            )
+            * fps
+            * num_frames,
         )
     except:
-        print("Video not found! Using dummy images!")
         dummy_num_clips = 4
         T = num_frames * dummy_num_clips
         C, H, W = 3, 224, 224
@@ -260,11 +263,11 @@ def dataset_gen(data, vfeat_lens, scope, args):
                 record["transforms"],
                 record["data_dir"],
             )
-            
+
             record["meta_dict_scope"][record["vid"]].update(
                 {"video_frame_path": video_frame_path}
             )
-            
+
             video_path = video_frame_path
             torch.save(video, video_frame_path)
 
@@ -285,36 +288,13 @@ def dataset_gen(data, vfeat_lens, scope, args):
         }
 
         dataset.append(result)
-        
+
     return dataset
 
 
 def gen_or_load_dataset(args):
     if not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir)
-
-    # data_dir = os.path.join("data", "dataset", args.task)
-    # feature_dir = os.path.join("data", "features", args.task, args.fv)
-    # if args.suffix is None:
-    #    save_path = os.path.join(
-    #        args.save_dir,
-    #        "_".join(
-    #            [args.task, args.fv, str(args.max_pos_len)]
-    #        )
-    #        + ".pkl",
-    #    )
-    # else:
-    #    save_path = os.path.join(
-    #        args.save_dir,
-    #        "_".join(
-    #            [args.task, args.fv, str(args.max_pos_len), args.suffix]
-    #        )
-    #        + ".pkl",
-    #    )
-
-    # if os.path.exists(save_path): ### Use this block with care, preferable to compute text fetaures before running
-    #    dataset = load_pickle(save_path)
-    #    return dataset
 
     feat_len_path = os.path.join("feature_shapes.json")
 
@@ -323,11 +303,10 @@ def gen_or_load_dataset(args):
     for vid, vfeat_len in vfeat_lens.items():
         vfeat_lens[vid] = min(args.max_pos_len, vfeat_len)
 
-    # load data
     processor = EpisodicNLQProcessor(context_length=77)
 
     train_data, val_data, test_data = processor.convert(args)
-    
+
     assert args.predictor == "AVION"
 
     train_set = dataset_gen(
@@ -345,14 +324,14 @@ def gen_or_load_dataset(args):
             "val",
             args,
         )
-        
+
     test_set = dataset_gen(
         test_data,
         vfeat_lens,
         "test",
         args,
     )
-    
+
     return {
         "train_set": train_set,
         "val_set": val_set,
