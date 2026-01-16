@@ -4,20 +4,22 @@ import torch
 import pickle
 import os
 import io
+import argparse
+import json
+from pathlib import Path
 
 from tqdm import tqdm
 from vllm import LLM, SamplingParams
 from qwen_vl_utils import process_vision_info
 
-# --- Configuration ---
-MODEL_PATH_DEFAULT = "Qwen/Qwen3-VL-8B-Instruct"
-CHUNK_LEN_SEC_DEFAULT = 15.0
-BATCH_SIZE = 16
-FPS = 8
-MAX_PIXELS = 360 * 420
-
-PKL_PATH = "/dais/fs/scratch/dduka/databases/ego4d/ego4d_train_with_uuid.pkl"
-VIDEO_ROOT = "/dais/fs/scratch/dduka/databases/ego4d/video_320px_15sec/"
+# --- Default Configuration ---
+DEFAULT_MODEL_PATH = "Qwen/Qwen2.5-VL-7B-Instruct"
+DEFAULT_CHUNK_LEN = 15.0
+DEFAULT_BATCH_SIZE = 16
+DEFAULT_FPS = 8
+DEFAULT_MAX_PIXELS = 360 * 420
+DEFAULT_PKL_PATH = "/dais/fs/scratch/dduka/databases/ego4d/ego4d_train_with_uuid.pkl"
+DEFAULT_VIDEO_ROOT = "/dais/fs/scratch/dduka/databases/ego4d/video_320px_15sec/"
 
 PROMPT_TEMPLATE = """
     TASK: Temporal localization in egocentric video.
@@ -50,24 +52,23 @@ PROMPT_TEMPLATE = """
 
 
 class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
-    def __init__(
-        self, pkl_path, video_root, fps, only_video_id=None, max_pixels=360 * 420
-    ):
+    def __init__(self, pkl_path, video_root, fps, chunk_len_sec, only_video_id=None):
         self.video_root = video_root
         self.fps = int(fps)
-        self.chunk_len_sec = CHUNK_LEN_SEC_DEFAULT
-        self.max_pixels = max_pixels
+        self.chunk_len_sec = chunk_len_sec
 
         print(f"Loading dataset from {pkl_path}...")
         # Expects: uuid, video_id, start, end, caption
         with open(pkl_path, "rb") as f:
-            self.rows = pickle.load(f)
+            self.all_rows = pickle.load(f)
 
         if only_video_id is not None:
-            self.rows = [r for r in self.rows if r[1] == only_video_id]
-        print(f"Dataset loaded with {len(self.rows)} items.")
+            self.all_rows = [r for r in self.all_rows if r[1] == only_video_id]
+
+        print(f"Dataset loaded with {len(self.all_rows)} total items.")
 
     def _get_chunk_path(self, root, video_id, chunk_id):
+        # Construct path: root/video_id.mp4/chunk_id.mp4
         return os.path.join(root, f"{video_id}.mp4", f"{chunk_id}.mp4")
 
     def _chunk_id_from_time(self, t):
@@ -88,10 +89,10 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
         return chunks
 
     def __len__(self):
-        return len(self.rows)
+        return len(self.all_rows)
 
     def __getitem__(self, idx):
-        row = self.rows[idx]
+        row = self.all_rows[idx]
         uuid, video_id, start, end, caption = row
 
         chunk_ids = self._get_covering_chunk_ids(start, end)
@@ -125,7 +126,6 @@ def load_chunk_tensor(video_path, fps, max_pixels):
     Returns: A list of tensors (usually length 1 for a single video file).
     """
     if not os.path.exists(video_path):
-        # Return None so we can handle missing files gracefully
         return None
 
     # We construct a minimal "message" just to use qwen_vl_utils for loading
@@ -153,123 +153,249 @@ def load_chunk_tensor(video_path, fps, max_pixels):
         return None
 
 
-# --- Main Execution ---
+def main():
+    parser = argparse.ArgumentParser(
+        description="Run Qwen2.5-VL inference on Ego4D dataset chunks."
+    )
 
-# 1. Initialize Dataset
-dataset = Ego4DChunkedTemporalDataset(
-    pkl_path=PKL_PATH,
-    video_root=VIDEO_ROOT,
-    fps=FPS,
-    max_pixels=MAX_PIXELS,
-    only_video_id=None,
-)
+    # Model and Hardware Config
+    parser.add_argument(
+        "--model_path",
+        type=str,
+        default=DEFAULT_MODEL_PATH,
+        help="Path to the model checkpoint.",
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+        help="Inference batch size.",
+    )
+    parser.add_argument(
+        "--tensor_parallel_size",
+        type=int,
+        default=4,
+        help="Number of GPUs for tensor parallelism.",
+    )
 
-# 2. Initialize vLLM Engine
-print(f"Initializing vLLM model: {MODEL_PATH_DEFAULT}...")
-llm = LLM(
-    model=MODEL_PATH_DEFAULT,
-    tensor_parallel_size=4,
-    trust_remote_code=True,
-    limit_mm_per_prompt={"video": 10},  # Allow enough chunks per prompt
-)
+    # Data Config
+    parser.add_argument(
+        "--pkl_path",
+        type=str,
+        default=DEFAULT_PKL_PATH,
+        help="Path to the dataset pickle file.",
+    )
+    parser.add_argument(
+        "--video_root",
+        type=str,
+        default=DEFAULT_VIDEO_ROOT,
+        help="Root directory for video chunks.",
+    )
+    parser.add_argument(
+        "--output_file",
+        type=str,
+        default=None,
+        help="Optional path to save JSONL output. If None, prints to stdout.",
+    )
 
-tokenizer = llm.get_tokenizer()
-sampling_params = SamplingParams(temperature=0.1, max_tokens=2048)
+    # Video Processing Config
+    parser.add_argument(
+        "--fps", type=float, default=DEFAULT_FPS, help="FPS to sample videos at."
+    )
+    parser.add_argument(
+        "--max_pixels",
+        type=int,
+        default=DEFAULT_MAX_PIXELS,
+        help="Max pixels for Qwen-VL processing.",
+    )
+    parser.add_argument(
+        "--chunk_len_sec",
+        type=float,
+        default=DEFAULT_CHUNK_LEN,
+        help="Length of each video chunk in seconds.",
+    )
 
-# 3. Process Batches
-print(f"Starting batched processing. Batch Size: {BATCH_SIZE}")
-total_start = time.time()
+    # Job Array / Parallelization Config
+    parser.add_argument(
+        "--start_idx",
+        type=int,
+        default=0,
+        help="Start index of the dataset to process (inclusive).",
+    )
+    parser.add_argument(
+        "--end_idx",
+        type=int,
+        default=-1,
+        help="End index of the dataset to process (exclusive). Use -1 for end of dataset.",
+    )
 
-for i in tqdm(range(0, len(dataset), BATCH_SIZE)):
-    batch_indices = range(i, min(i + BATCH_SIZE, len(dataset)))
+    args = parser.parse_args()
 
-    # Get raw items from dataset (metadata only, no video loaded yet)
-    batch_items = [dataset[idx] for idx in batch_indices]
+    # 1. Initialize Dataset
+    dataset = Ego4DChunkedTemporalDataset(
+        pkl_path=args.pkl_path,
+        video_root=args.video_root,
+        fps=args.fps,
+        chunk_len_sec=args.chunk_len_sec,
+        only_video_id=None,
+    )
 
-    # --- Step A: Identify Unique Videos ---
-    unique_paths = set()
-    for item in batch_items:
-        unique_paths.update(item["chunks"])
+    # Determine processing range
+    total_len = len(dataset)
+    start_idx = args.start_idx
+    # Handle negative indexing or defaults for end_idx
+    if args.end_idx == -1 or args.end_idx > total_len:
+        end_idx = total_len
+    else:
+        end_idx = args.end_idx
 
-    # --- Step B: Load Videos into Batch Cache ---
-    # This ensures every file is read from disk exactly once per batch
-    chunk_cache = {}  # path -> video_tensor
+    # Sanity check
+    if start_idx >= end_idx:
+        print(
+            f"Start index ({start_idx}) >= End index ({end_idx}). Nothing to process."
+        )
+        return
 
-    for path in unique_paths:
-        tensor_output = load_chunk_tensor(path, fps=FPS, max_pixels=MAX_PIXELS)
-        if tensor_output is not None:
-            chunk_cache[path] = tensor_output
+    print(
+        f"Processing range: [{start_idx}, {end_idx}) (Total items to process: {end_idx - start_idx})"
+    )
 
-    # --- Step C: Build vLLM Inputs ---
-    vllm_inputs_batch = []
-    metadata_batch = []
+    # 2. Initialize vLLM Engine
+    print(f"Initializing vLLM model: {args.model_path}...")
+    llm = LLM(
+        model=args.model_path,
+        tensor_parallel_size=args.tensor_parallel_size,
+        trust_remote_code=True,
+        limit_mm_per_prompt={"video": 10},  # Allow enough chunks per prompt
+    )
 
-    for item in batch_items:
-        content_list = []
-        combined_video_tensors = []
+    tokenizer = llm.get_tokenizer()
+    sampling_params = SamplingParams(temperature=0.1, max_tokens=2048)
 
-        # Add video blocks
-        for path in item["chunks"]:
-            if path in chunk_cache:
-                # 1. Add placeholder for prompt text structure
-                # We provide a dummy "video" key so the template processor knows a video exists here
-                content_list.append({"type": "video", "video": "placeholder"})
+    # 3. Process Batches
+    print(f"Starting batched processing. Batch Size: {args.batch_size}")
+    total_start_time = time.time()
 
-                # 2. Collect the actual tensor data
-                combined_video_tensors.extend(chunk_cache[path])
-            else:
-                # Handle missing video gracefully (warn and skip adding)
-                print(
-                    f"Warning: Skipping missing video chunk for UUID {item['uuid']}: {path}"
+    # Open output file if specified (append mode is best for distributed jobs to avoid overwriting if restarting)
+    out_f = None
+    if args.output_file:
+        # Create directory if it doesn't exist
+        Path(args.output_file).parent.mkdir(parents=True, exist_ok=True)
+        out_f = open(args.output_file, "a", encoding="utf-8")
+
+    # Iterate strictly over the requested slice
+    # We maintain current_idx to track progress through the slice
+    current_idx = start_idx
+
+    # Tqdm progress bar reflects the slice size
+    pbar = tqdm(total=end_idx - start_idx)
+
+    while current_idx < end_idx:
+        # Calculate batch boundaries
+        batch_end = min(current_idx + args.batch_size, end_idx)
+        batch_indices = range(current_idx, batch_end)
+
+        # Get raw items from dataset
+        batch_items = [dataset[idx] for idx in batch_indices]
+
+        # --- Step A: Identify Unique Videos ---
+        unique_paths = set()
+        for item in batch_items:
+            unique_paths.update(item["chunks"])
+
+        # --- Step B: Load Videos into Batch Cache ---
+        chunk_cache = {}
+        for path in unique_paths:
+            if path not in chunk_cache:
+                tensor_output = load_chunk_tensor(
+                    path, fps=args.fps, max_pixels=args.max_pixels
+                )
+                if tensor_output is not None:
+                    chunk_cache[path] = tensor_output
+
+        # --- Step C: Build vLLM Inputs ---
+        vllm_inputs_batch = []
+        metadata_batch = []
+
+        for item in batch_items:
+            content_list = []
+            combined_video_tensors = []
+            valid_item = True
+
+            # Add video blocks
+            for path in item["chunks"]:
+                if path in chunk_cache:
+                    # 1. Add placeholder for prompt text structure
+                    content_list.append({"type": "video", "video": "placeholder"})
+                    # 2. Collect the actual tensor data
+                    combined_video_tensors.extend(chunk_cache[path])
+                else:
+                    print(
+                        f"Warning: Skipping missing video chunk for UUID {item['uuid']}: {path}"
+                    )
+                    valid_item = False
+                    break
+
+            if valid_item:
+                # Add text instruction
+                content_list.append({"type": "text", "text": item["text_prompt"]})
+
+                # Apply Chat Template
+                conversation = [{"role": "user", "content": content_list}]
+                prompt_text = tokenizer.apply_chat_template(
+                    conversation, tokenize=False, add_generation_prompt=True
                 )
 
-        # Add text instruction
-        content_list.append({"type": "text", "text": item["text_prompt"]})
+                vllm_inputs_batch.append(
+                    {
+                        "prompt": prompt_text,
+                        "multi_modal_data": {"video": combined_video_tensors},
+                    }
+                )
+                metadata_batch.append(item)
 
-        # Apply Chat Template
-        conversation = [{"role": "user", "content": content_list}]
-        prompt_text = tokenizer.apply_chat_template(
-            conversation, tokenize=False, add_generation_prompt=True
-        )
+        # --- Step D: Run Inference ---
+        if vllm_inputs_batch:
+            try:
+                # use_tqdm=False to avoid conflict with our manual pbar
+                outputs = llm.generate(
+                    vllm_inputs_batch, sampling_params, use_tqdm=False
+                )
 
-        # Only add to batch if we successfully loaded at least one video
-        if combined_video_tensors:
-            vllm_inputs_batch.append(
-                {
-                    "prompt": prompt_text,
-                    "multi_modal_data": {"video": combined_video_tensors},
-                }
-            )
-            metadata_batch.append(item)
+                # --- Step E: Handle Results ---
+                for j, output in enumerate(outputs):
+                    generated_text = output.outputs[0].text
+                    meta = metadata_batch[j]
 
-    if not vllm_inputs_batch:
-        continue
+                    result_entry = {
+                        "uuid": meta["uuid"],
+                        "video_id": meta["video_id"],
+                        "global_start": meta["global_start"],
+                        "global_end": meta["global_end"],
+                        "caption": meta["caption"],
+                        "model_output": generated_text,
+                    }
 
-    # --- Step D: Run Inference ---
-    print(f"Generating batch {i} to {i + len(vllm_inputs_batch)}...")
-    batch_start = time.time()
+                    if out_f:
+                        out_f.write(json.dumps(result_entry) + "\n")
+                        out_f.flush()
+                    else:
+                        print(f"[UUID: {meta['uuid']}] Output: {generated_text}")
+                        print("-" * 30)
 
-    try:
-        outputs = llm.generate(vllm_inputs_batch, sampling_params)
-    except Exception as e:
-        print(f"Inference error in batch {i}: {e}")
-        continue
+            except Exception as e:
+                print(f"Inference error in batch starting at {current_idx}: {e}")
 
-    batch_duration = time.time() - batch_start
+        # Update loop state
+        pbar.update(len(batch_indices))
+        current_idx = batch_end
 
-    # --- Step E: Handle Results ---
-    for j, output in enumerate(outputs):
-        generated_text = output.outputs[0].text
-        meta = metadata_batch[j]
+    pbar.close()
+    if out_f:
+        out_f.close()
 
-        print(
-            f"[UUID: {meta['uuid']}, VIDEO ID: {meta['video_id']}, GLOABL START: {meta['global_start']} GLOBAL END: {meta['global_end']}] Caption: {meta['caption']}"
-        )
-        print(f"Output: {generated_text}")
-        print("-" * 30)
-
-    if i > 100:
-        break
+    print(f"Job finished. Execution time: {time.time() - total_start_time:.2f}s")
 
 
-print(f"Total execution time: {time.time() - total_start:.2f}s")
+if __name__ == "__main__":
+    main()
