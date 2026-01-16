@@ -163,4 +163,4 @@ cython_debug/
 
 /egonlq/saved_*
 
-/second_party/qwen3vl
+/second_party/qwen3vl/output*
