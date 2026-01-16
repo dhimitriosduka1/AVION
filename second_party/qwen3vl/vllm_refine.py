@@ -78,7 +78,9 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
 
     def _compute_video_lengths(self):
         self.video_lengths = {}
-        for current_dir, _, files in os.walk(self.video_root):
+        for current_dir, _, files in tqdm(
+            os.walk(self.video_root), desc="Computing video lengths..."
+        ):
             if not current_dir.endswith(".mp4"):
                 continue
 
@@ -168,7 +170,10 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
             "chunks": paths,
             "global_start": start,
             "global_end": end,
+            "rel_start": rel_start,
+            "rel_end": rel_end,
             "video_length": self.video_lengths[video_id],
+            "base_offset": base_offset,
             "text_prompt": PROMPT_TEMPLATE.format(
                 caption=caption, seed_start=rel_start, seed_end=rel_end
             ),
@@ -246,7 +251,7 @@ def main():
         "--output_file",
         type=str,
         default=DEFAULT_OUTPUT_FILE_PATH,
-        help="Optional path to save JSONL output. If None, prints to stdout.",
+        help="Optional path to save JSON output.",
     )
 
     # Video Processing Config
@@ -315,6 +320,20 @@ def main():
     )
     print(f"Video Padding: {args.video_padding}s")
 
+    # --- HANDLE OUTPUT FILENAME ---
+    final_output_path = None
+    if args.output_file:
+        original_path = Path(args.output_file)
+        # Create new filename: originalstem_start_end.json
+        new_filename = (
+            f"{original_path.stem}_{start_idx}_{end_idx}{original_path.suffix}"
+        )
+        final_output_path = original_path.parent / new_filename
+
+        # Ensure directory exists
+        final_output_path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Saving output to: {final_output_path}")
+
     # 2. Initialize vLLM Engine
     print(f"Initializing vLLM model: {args.model_path}...")
 
@@ -334,105 +353,138 @@ def main():
     total_start_time = time.time()
 
     out_f = None
-    if args.output_file:
-        Path(args.output_file).parent.mkdir(parents=True, exist_ok=True)
-        out_f = open(args.output_file, "a", encoding="utf-8")
+    is_first_entry = True
+
+    # Initialize file with array bracket
+    if final_output_path:
+        out_f = open(final_output_path, "w", encoding="utf-8")
+        out_f.write("[\n")
 
     current_idx = start_idx
     pbar = tqdm(total=end_idx - start_idx)
 
-    while current_idx < end_idx:
-        batch_end = min(current_idx + args.batch_size, end_idx)
-        batch_indices = range(current_idx, batch_end)
-        batch_items = [dataset[idx] for idx in batch_indices]
+    try:
+        while current_idx < end_idx:
+            batch_end = min(current_idx + args.batch_size, end_idx)
+            batch_indices = range(current_idx, batch_end)
+            batch_items = [dataset[idx] for idx in batch_indices]
 
-        # Step A: Identify Unique Videos
-        unique_paths = set()
-        for item in batch_items:
-            unique_paths.update(item["chunks"])
+            # Step A: Identify Unique Videos
+            unique_paths = set()
+            for item in batch_items:
+                unique_paths.update(item["chunks"])
 
-        # Step B: Load Videos into Batch Cache
-        chunk_cache = {}
-        for path in unique_paths:
-            if path not in chunk_cache:
-                tensor_output = load_chunk_tensor(
-                    path, fps=args.fps, max_pixels=args.max_pixels
-                )
-                if tensor_output is not None:
-                    chunk_cache[path] = tensor_output
-
-        # Step C: Build vLLM Inputs
-        vllm_inputs_batch = []
-        metadata_batch = []
-
-        for item in batch_items:
-            content_list = []
-            combined_video_tensors = []
-            valid_item = True
-
-            for path in item["chunks"]:
-                if path in chunk_cache:
-                    content_list.append({"type": "video", "video": "placeholder"})
-                    combined_video_tensors.extend(chunk_cache[path])
-                else:
-                    print(
-                        f"Warning: Skipping missing video chunk for UUID {item['uuid']}: {path}"
+            # Step B: Load Videos into Batch Cache
+            chunk_cache = {}
+            for path in unique_paths:
+                if path not in chunk_cache:
+                    tensor_output = load_chunk_tensor(
+                        path, fps=args.fps, max_pixels=args.max_pixels
                     )
-                    valid_item = False
-                    break
+                    if tensor_output is not None:
+                        chunk_cache[path] = tensor_output
 
-            if valid_item:
-                content_list.append({"type": "text", "text": item["text_prompt"]})
-                conversation = [{"role": "user", "content": content_list}]
-                prompt_text = tokenizer.apply_chat_template(
-                    conversation, tokenize=False, add_generation_prompt=True
-                )
+            # Step C: Build vLLM Inputs
+            vllm_inputs_batch = []
+            metadata_batch = []
 
-                vllm_inputs_batch.append(
-                    {
-                        "prompt": prompt_text,
-                        "multi_modal_data": {"video": combined_video_tensors},
-                    }
-                )
-                metadata_batch.append(item)
+            for item in batch_items:
+                content_list = []
+                combined_video_tensors = []
+                valid_item = True
 
-        # Step D: Run Inference
-        if vllm_inputs_batch:
-            try:
-                outputs = llm.generate(
-                    vllm_inputs_batch, sampling_params, use_tqdm=False
-                )
-
-                for j, output in enumerate(outputs):
-                    generated_text = output.outputs[0].text
-                    meta = metadata_batch[j]
-
-                    result_entry = {
-                        "uuid": meta["uuid"],
-                        "video_id": meta["video_id"],
-                        "global_start": meta["global_start"],
-                        "global_end": meta["global_end"],
-                        "caption": meta["caption"],
-                        "padding_used": args.video_padding,
-                        "model_output": generated_text,
-                    }
-
-                    if out_f:
-                        out_f.write(json.dumps(result_entry) + "\n")
-                        out_f.flush()
+                for path in item["chunks"]:
+                    if path in chunk_cache:
+                        content_list.append({"type": "video", "video": "placeholder"})
+                        combined_video_tensors.extend(chunk_cache[path])
                     else:
-                        print(f"[UUID: {meta['uuid']}] Output: {generated_text}")
+                        print(
+                            f"Warning: Skipping missing video chunk for UUID {item['uuid']}: {path}"
+                        )
+                        valid_item = False
+                        break
 
-            except Exception as e:
-                print(f"Inference error in batch starting at {current_idx}: {e}")
+                if valid_item:
+                    content_list.append({"type": "text", "text": item["text_prompt"]})
+                    conversation = [{"role": "user", "content": content_list}]
+                    prompt_text = tokenizer.apply_chat_template(
+                        conversation, tokenize=False, add_generation_prompt=True
+                    )
 
-        pbar.update(len(batch_indices))
-        current_idx = batch_end
+                    vllm_inputs_batch.append(
+                        {
+                            "prompt": prompt_text,
+                            "multi_modal_data": {"video": combined_video_tensors},
+                        }
+                    )
+                    metadata_batch.append(item)
+
+            # Step D: Run Inference
+            if vllm_inputs_batch:
+                try:
+                    outputs = llm.generate(
+                        vllm_inputs_batch, sampling_params, use_tqdm=False
+                    )
+
+                    for j, output in enumerate(outputs):
+                        generated_text = output.outputs[0].text
+                        meta = metadata_batch[j]
+
+                        # Try to parse the model output as JSON if possible, otherwise save as string
+                        # Since user requested "saved objects must be jsons", we wrap it nicely
+                        try:
+                            # Attempt to clean potential markdown code blocks ```json ... ```
+                            clean_text = (
+                                generated_text.replace("```json", "")
+                                .replace("```", "")
+                                .strip()
+                            )
+                            model_json_output = json.loads(clean_text)
+                        except json.JSONDecodeError:
+                            # Fallback if model didn't output valid JSON
+                            model_json_output = {
+                                "raw_output": generated_text,
+                                "error": "Model output not valid JSON",
+                            }
+
+                        result_entry = {
+                            "uuid": meta["uuid"],
+                            "video_id": meta["video_id"],
+                            "rel_start": meta["rel_start"],
+                            "rel_end": meta["rel_end"],
+                            "global_start": meta["global_start"],
+                            "global_end": meta["global_end"],
+                            "caption": meta["caption"],
+                            "base_offset": meta["base_offset"],
+                            "padding_used": args.video_padding,
+                            "model_output": model_json_output,
+                        }
+
+                        if out_f:
+                            if not is_first_entry:
+                                out_f.write(",\n")
+
+                            # Dump the object as a formatted JSON entry
+                            json.dump(result_entry, out_f, indent=4)
+                            out_f.flush()
+                            is_first_entry = False
+                        else:
+                            print(f"[UUID: {meta['uuid']}] Output: {generated_text}")
+
+                except Exception as e:
+                    print(f"Inference error in batch starting at {current_idx}: {e}")
+
+            pbar.update(len(batch_indices))
+            current_idx = batch_end
+
+    finally:
+        # Step E: Cleanup and close JSON array
+        if out_f:
+            out_f.write("\n]")
+            out_f.close()
+            print("File closed successfully.")
 
     pbar.close()
-    if out_f:
-        out_f.close()
-
     print(f"Job finished. Execution time: {time.time() - total_start_time:.2f}s")
 
 
