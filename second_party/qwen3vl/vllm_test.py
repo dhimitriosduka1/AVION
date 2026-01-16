@@ -4,6 +4,7 @@ import torch
 import pickle
 import os
 
+from tqdm import tqdm
 from vllm import LLM, SamplingParams
 from qwen_vl_utils import process_vision_info
 
@@ -58,8 +59,8 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
         if only_video_id is not None:
             self.rows = [r for r in self.rows if r[1] == only_video_id]
 
-    def _get_chunk_path(root, video_id, chunk_id):
-        return os.path.join(root, video_id, f"{chunk_id}.mp4")
+    def _get_chunk_path(self, root, video_id, chunk_id):
+        return os.path.join(root, f"{video_id}.mp4", f"{chunk_id}.mp4")
 
     def _chunk_id_from_time(self, t):
         return int(math.floor(t / self.chunk_len_sec) * self.chunk_len_sec)
@@ -135,12 +136,10 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
         }
 
 
-# --- Execution ---
-
 # 1. Create the dataset
 dataset = Ego4DChunkedTemporalDataset(
-    pkl_path="dummy_annotations.pkl",  # Ensure this file exists or code uses mock
-    video_root="/path/to/videos",
+    pkl_path="/dais/fs/scratch/dduka/databases/ego4d/ego4d_train_with_uuid.pkl",
+    video_root="/dais/fs/scratch/dduka/databases/ego4d/video_320px_15sec/",
     fps=8,
     only_video_id=None,
 )
@@ -148,54 +147,52 @@ dataset = Ego4DChunkedTemporalDataset(
 # 2. Initialize the engine
 llm = LLM(
     model=MODEL_PATH_DEFAULT,
-    tensor_parallel_size=1,  # Adjusted for typical single GPU usage, change back to 4 if needed
+    tensor_parallel_size=4,
     trust_remote_code=True,
     limit_mm_per_prompt={"video": 5},
 )
 
 # 3. Process items from the dataset
-# Instead of hardcoding a path, we grab an item from the dataset we built
-if len(dataset) > 0:
-    item = dataset[0]
+for i in tqdm(range(len(dataset))):
+    item = dataset[i]
     messages = [item["message"]]
     print(f"Processing UUID: {item['uuid']} | Caption: {item['caption']}")
     print(f"Video paths: {item['chunks']}")
-else:
-    print("Dataset is empty.")
-    exit()
 
-# 4. Apply chat template
-tokenizer = llm.get_tokenizer()
-prompt_text = tokenizer.apply_chat_template(
-    messages, tokenize=False, add_generation_prompt=True
-)
+    # 4. Apply chat template
+    tokenizer = llm.get_tokenizer()
+    prompt_text = tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
 
-# 5. Process vision info
-# This extracts pixel values and metadata from the video paths
-image_inputs, video_inputs = process_vision_info(messages, return_video_metadata=True)
+    # 5. Process vision info
+    # This extracts pixel values and metadata from the video paths
+    image_inputs, video_inputs = process_vision_info(
+        messages, return_video_metadata=True
+    )
 
-# 6. Construct vLLM input
-mm_data = {}
-if image_inputs:
-    mm_data["image"] = image_inputs
-if video_inputs:
-    mm_data["video"] = video_inputs
+    # 6. Construct vLLM input
+    mm_data = {}
+    if image_inputs:
+        mm_data["image"] = image_inputs
+    if video_inputs:
+        mm_data["video"] = video_inputs
 
-vllm_inputs = {
-    "prompt": prompt_text,
-    "multi_modal_data": mm_data,
-}
+    vllm_inputs = {
+        "prompt": prompt_text,
+        "multi_modal_data": mm_data,
+    }
 
-# 7. Generate
-# Stop token ids might be needed for strictly JSON output, but defaults usually work
-sampling_params = SamplingParams(
-    temperature=0.1, max_tokens=2048
-)  # Lower temp for JSON stability
+    # 7. Generate
+    # Stop token ids might be needed for strictly JSON output, but defaults usually work
+    sampling_params = SamplingParams(
+        temperature=0.1, max_tokens=2048
+    )  # Lower temp for JSON stability
 
-start = time.time()
-outputs = llm.generate([vllm_inputs], sampling_params)
-duration = time.time() - start
+    start = time.time()
+    outputs = llm.generate([vllm_inputs], sampling_params)
+    duration = time.time() - start
 
-for output in outputs:
-    print(f"Response costs: {duration:.2f}s")
-    print(f"Generated text: {output.outputs[0].text}")
+    for output in outputs:
+        print(f"Response costs: {duration:.2f}s")
+        print(f"Generated text: {output.outputs[0].text}")
