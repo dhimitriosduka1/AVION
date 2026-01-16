@@ -12,7 +12,7 @@ from qwen_vl_utils import process_vision_info
 # --- Configuration ---
 MODEL_PATH_DEFAULT = "Qwen/Qwen3-VL-8B-Instruct"
 CHUNK_LEN_SEC_DEFAULT = 15.0
-BATCH_SIZE = 256
+BATCH_SIZE = 16
 FPS = 8
 MAX_PIXELS = 360 * 420
 
@@ -111,6 +111,8 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
             "video_id": video_id,
             "caption": caption,
             "chunks": paths,  # List of file paths
+            "global_start": start,
+            "global_end": end,
             "text_prompt": PROMPT_TEMPLATE.format(
                 caption=caption, seed_start=rel_start, seed_end=rel_end
             ),
@@ -260,9 +262,14 @@ for i in tqdm(range(0, len(dataset), BATCH_SIZE)):
         generated_text = output.outputs[0].text
         meta = metadata_batch[j]
 
-        print(f"[UUID: {meta['uuid']}] Caption: {meta['caption']}")
+        print(
+            f"[UUID: {meta['uuid']}, VIDEO ID: {meta['video_id']}, GLOABL START: {meta['global_start']} GLOBAL END: {meta['global_end']}] Caption: {meta['caption']}"
+        )
         print(f"Output: {generated_text}")
         print("-" * 30)
+
+    if i > 100:
+        break
 
 
 print(f"Total execution time: {time.time() - total_start:.2f}s")
