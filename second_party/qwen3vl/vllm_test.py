@@ -8,8 +8,10 @@ from tqdm import tqdm
 from vllm import LLM, SamplingParams
 from qwen_vl_utils import process_vision_info
 
+# --- Configuration ---
 MODEL_PATH_DEFAULT = "Qwen/Qwen3-VL-8B-Instruct"
 CHUNK_LEN_SEC_DEFAULT = 15.0
+BATCH_SIZE = 256
 
 PROMPT_TEMPLATE = """
     TASK: Temporal localization in egocentric video.
@@ -50,6 +52,7 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
         self.chunk_len_sec = CHUNK_LEN_SEC_DEFAULT
         self.max_pixels = max_pixels
 
+        print(f"Loading dataset from {pkl_path}...")
         # uuid, video_id, start, end, caption
         with open(pkl_path, "rb") as f:
             self.rows = pickle.load(f)
@@ -58,6 +61,7 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
 
         if only_video_id is not None:
             self.rows = [r for r in self.rows if r[1] == only_video_id]
+        print(f"Dataset loaded with {len(self.rows)} items.")
 
     def _get_chunk_path(self, root, video_id, chunk_id):
         return os.path.join(root, f"{video_id}.mp4", f"{chunk_id}.mp4")
@@ -84,14 +88,12 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         row = self.rows[idx]
-        # Unpacking row for clarity
         uuid, video_id, start, end, caption = row
 
         chunk_ids = self._get_covering_chunk_ids(start, end)
 
         paths = []
         for cid in chunk_ids:
-            # FIXED: logic to get path and undefined `chunk_path` function
             c_path = self._get_chunk_path(self.video_root, video_id, cid)
             paths.append(c_path)
 
@@ -104,6 +106,9 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
 
         # Add video blocks
         for video_path in paths:
+            if not os.path.exists(video_path):
+                print(f"Warning: Video missing at {video_path}")
+
             content.append(
                 {
                     "type": "video",
@@ -123,16 +128,17 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
             }
         )
 
+        # Return structured data; message is a LIST of dicts (user role)
         return {
             "uuid": row[0],
             "video_id": row[1],
-            "caption": row[-1],  # FIXED: Missing comma was here
+            "caption": caption,
             "global_start": start,
             "global_end": end,
             "rel_start": rel_start,
             "rel_end": rel_end,
             "chunks": paths,
-            "message": {"role": "user", "content": content},
+            "message": [{"role": "user", "content": content}],
         }
 
 
@@ -145,6 +151,7 @@ dataset = Ego4DChunkedTemporalDataset(
 )
 
 # 2. Initialize the engine
+print(f"Initializing vLLM model: {MODEL_PATH_DEFAULT}...")
 llm = LLM(
     model=MODEL_PATH_DEFAULT,
     tensor_parallel_size=4,
@@ -152,47 +159,79 @@ llm = LLM(
     limit_mm_per_prompt={"video": 5},
 )
 
-# 3. Process items from the dataset
-for i in tqdm(range(len(dataset))):
-    item = dataset[i]
-    messages = [item["message"]]
-    print(f"Processing UUID: {item['uuid']} | Caption: {item['caption']}")
-    print(f"Video paths: {item['chunks']}")
+tokenizer = llm.get_tokenizer()
 
-    # 4. Apply chat template
-    tokenizer = llm.get_tokenizer()
-    prompt_text = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
+sampling_params = SamplingParams(temperature=0.1, max_tokens=2048)
+
+# 3. Process items in BATCHES
+print(f"Starting batched processing. Batch Size: {BATCH_SIZE}")
+total_start = time.time()
+
+# Loop through the dataset in steps of BATCH_SIZE
+for i in tqdm(range(0, len(dataset), BATCH_SIZE)):
+    batch_indices = range(i, min(i + BATCH_SIZE, len(dataset)))
+
+    # Buffers for the current batch
+    vllm_inputs_batch = []
+    metadata_batch = []
+
+    # --- A. Prepare Batch (CPU Work) ---
+    for idx in batch_indices:
+        try:
+            item = dataset[idx]
+
+            # Apply chat template
+            prompt_text = tokenizer.apply_chat_template(
+                item["message"], tokenize=False, add_generation_prompt=True
+            )
+
+            # Process vision info (loads video bytes from disk)
+            image_inputs, video_inputs = process_vision_info(
+                item["message"], return_video_metadata=True
+            )
+
+            # Construct vLLM input dict
+            mm_data = {}
+            if image_inputs:
+                mm_data["image"] = image_inputs
+            if video_inputs:
+                mm_data["video"] = video_inputs
+
+            vllm_inputs_batch.append(
+                {
+                    "prompt": prompt_text,
+                    "multi_modal_data": mm_data,
+                }
+            )
+
+            metadata_batch.append({"uuid": item["uuid"], "caption": item["caption"]})
+        except Exception as e:
+            print(f"Error preparing item {idx}: {e}")
+            continue
+
+    if not vllm_inputs_batch:
+        continue
+
+    # --- B. Run Inference (GPU Work) ---
+    print(f"Generating batch {i} to {i+len(vllm_inputs_batch)}...")
+    batch_start = time.time()
+
+    # KEY CHANGE: passing a list of inputs allows vLLM to use continuous batching
+    outputs = llm.generate(vllm_inputs_batch, sampling_params)
+
+    batch_duration = time.time() - batch_start
+
+    # # --- C. Process Results ---
+    for j, output in enumerate(outputs):
+        generated_text = output.outputs[0].text
+        meta = metadata_batch[j]
+
+        print(f"[UUID: {meta['uuid']}] Caption: {meta['caption']}")
+        print(f"Output: {generated_text}")
+        print("-" * 30)
+
+    print(
+        f"Batch finished in {batch_duration:.2f}s (Avg {batch_duration/len(vllm_inputs_batch):.2f}s per item)"
     )
 
-    # 5. Process vision info
-    # This extracts pixel values and metadata from the video paths
-    image_inputs, video_inputs = process_vision_info(
-        messages, return_video_metadata=True
-    )
-
-    # 6. Construct vLLM input
-    mm_data = {}
-    if image_inputs:
-        mm_data["image"] = image_inputs
-    if video_inputs:
-        mm_data["video"] = video_inputs
-
-    vllm_inputs = {
-        "prompt": prompt_text,
-        "multi_modal_data": mm_data,
-    }
-
-    # 7. Generate
-    # Stop token ids might be needed for strictly JSON output, but defaults usually work
-    sampling_params = SamplingParams(
-        temperature=0.1, max_tokens=2048
-    )  # Lower temp for JSON stability
-
-    start = time.time()
-    outputs = llm.generate([vllm_inputs], sampling_params)
-    duration = time.time() - start
-
-    for output in outputs:
-        print(f"Response costs: {duration:.2f}s")
-        print(f"Generated text: {output.outputs[0].text}")
+print(f"Total execution time: {time.time() - total_start:.2f}s")
