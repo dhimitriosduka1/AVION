@@ -22,7 +22,7 @@ DEFAULT_PKL_PATH = "/dais/fs/scratch/dduka/databases/ego4d/ego4d_train_with_uuid
 DEFAULT_VIDEO_ROOT = "/dais/fs/scratch/dduka/databases/ego4d/video_320px_15sec/"
 DEFAULT_PADDING = 5.0
 DEFAULT_OUTPUT_FILE_PATH = (
-    "/dais/fs/scratch/dduka/databases/ego4d/qwen_refinement/output.json"
+    "/dais/fs/scratch/dduka/databases/ego4d/qwen_refinement/output.jsonl"
 )
 
 PROMPT_TEMPLATE = """
@@ -251,7 +251,7 @@ def main():
         "--output_file",
         type=str,
         default=DEFAULT_OUTPUT_FILE_PATH,
-        help="Optional path to save JSON output.",
+        help="Optional path to save output (will default to .jsonl extension).",
     )
 
     # Video Processing Config
@@ -291,7 +291,6 @@ def main():
 
     args = parser.parse_args()
 
-    # 1. Initialize Dataset
     dataset = Ego4DChunkedTemporalDataset(
         pkl_path=args.pkl_path,
         video_root=args.video_root,
@@ -301,7 +300,6 @@ def main():
         only_video_id=None,
     )
 
-    # Determine processing range
     total_len = len(dataset)
     start_idx = args.start_idx
     if args.end_idx == -1 or args.end_idx > total_len:
@@ -320,45 +318,44 @@ def main():
     )
     print(f"Video Padding: {args.video_padding}s")
 
-    # --- HANDLE OUTPUT FILENAME ---
     final_output_path = None
     if args.output_file:
         original_path = Path(args.output_file)
-        # Create new filename: originalstem_start_end.json
-        new_filename = (
-            f"{original_path.stem}_{start_idx}_{end_idx}{original_path.suffix}"
-        )
+        # Force .jsonl extension for clarity and safety
+        new_filename = f"{original_path.stem}_{start_idx}_{end_idx}.jsonl"
         final_output_path = original_path.parent / new_filename
 
         # Ensure directory exists
         final_output_path.parent.mkdir(parents=True, exist_ok=True)
         print(f"Saving output to: {final_output_path}")
 
-    # 2. Initialize vLLM Engine
     print(f"Initializing vLLM model: {args.model_path}...")
 
-    # Note: If padding is large, you might need to increase limit_mm_per_prompt['video']
+    mm_processor_kwargs = {"mm_encoder_tp_mode": "data"}
+
     llm = LLM(
         model=args.model_path,
         tensor_parallel_size=args.tensor_parallel_size,
         trust_remote_code=True,
         limit_mm_per_prompt={"video": 10},
+        mm_processor_kwargs=mm_processor_kwargs,
     )
 
     tokenizer = llm.get_tokenizer()
-    sampling_params = SamplingParams(temperature=0.1, max_tokens=2048)
 
-    # 3. Process Batches
+    sampling_params = SamplingParams(
+        temperature=0.1,
+        top_p=0.9,
+        max_tokens=2048,
+        repetition_penalty=1.05,
+    )
+
     print(f"Starting batched processing. Batch Size: {args.batch_size}")
     total_start_time = time.time()
 
     out_f = None
-    is_first_entry = True
-
-    # Initialize file with array bracket
     if final_output_path:
         out_f = open(final_output_path, "w", encoding="utf-8")
-        out_f.write("[\n")
 
     current_idx = start_idx
     pbar = tqdm(total=end_idx - start_idx)
@@ -369,12 +366,10 @@ def main():
             batch_indices = range(current_idx, batch_end)
             batch_items = [dataset[idx] for idx in batch_indices]
 
-            # Step A: Identify Unique Videos
             unique_paths = set()
             for item in batch_items:
                 unique_paths.update(item["chunks"])
 
-            # Step B: Load Videos into Batch Cache
             chunk_cache = {}
             for path in unique_paths:
                 if path not in chunk_cache:
@@ -384,7 +379,6 @@ def main():
                     if tensor_output is not None:
                         chunk_cache[path] = tensor_output
 
-            # Step C: Build vLLM Inputs
             vllm_inputs_batch = []
             metadata_batch = []
 
@@ -419,7 +413,6 @@ def main():
                     )
                     metadata_batch.append(item)
 
-            # Step D: Run Inference
             if vllm_inputs_batch:
                 try:
                     outputs = llm.generate(
@@ -430,10 +423,7 @@ def main():
                         generated_text = output.outputs[0].text
                         meta = metadata_batch[j]
 
-                        # Try to parse the model output as JSON if possible, otherwise save as string
-                        # Since user requested "saved objects must be jsons", we wrap it nicely
                         try:
-                            # Attempt to clean potential markdown code blocks ```json ... ```
                             clean_text = (
                                 generated_text.replace("```json", "")
                                 .replace("```", "")
@@ -441,7 +431,6 @@ def main():
                             )
                             model_json_output = json.loads(clean_text)
                         except json.JSONDecodeError:
-                            # Fallback if model didn't output valid JSON
                             model_json_output = {
                                 "raw_output": generated_text,
                                 "error": "Model output not valid JSON",
@@ -461,13 +450,9 @@ def main():
                         }
 
                         if out_f:
-                            if not is_first_entry:
-                                out_f.write(",\n")
-
-                            # Dump the object as a formatted JSON entry
-                            json.dump(result_entry, out_f, indent=4)
+                            json_line = json.dumps(result_entry, ensure_ascii=False)
+                            out_f.write(json_line + "\n")
                             out_f.flush()
-                            is_first_entry = False
                         else:
                             print(f"[UUID: {meta['uuid']}] Output: {generated_text}")
 
@@ -478,13 +463,11 @@ def main():
             current_idx = batch_end
 
     finally:
-        # Step E: Cleanup and close JSON array
         if out_f:
-            out_f.write("\n]")
             out_f.close()
             print("File closed successfully.")
+        pbar.close()
 
-    pbar.close()
     print(f"Job finished. Execution time: {time.time() - total_start_time:.2f}s")
 
 
