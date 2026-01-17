@@ -1,9 +1,9 @@
+import os
+import cv2
 import math
 import time
 import torch
 import pickle
-import os
-import cv2
 import argparse
 import json
 from pathlib import Path
@@ -20,10 +20,11 @@ DEFAULT_FPS = 8
 DEFAULT_MAX_PIXELS = 360 * 420
 DEFAULT_PKL_PATH = "/dais/fs/scratch/dduka/databases/ego4d/ego4d_train_with_uuid.pkl"
 DEFAULT_VIDEO_ROOT = "/dais/fs/scratch/dduka/databases/ego4d/video_320px_15sec/"
-DEFAULT_PADDING = 5.0
+DEFAULT_PADDING = 0.0
 DEFAULT_OUTPUT_FILE_PATH = (
     "/dais/fs/scratch/dduka/databases/ego4d/qwen_refinement/output.jsonl"
 )
+DEFAULT_VIDEO_LEN_PATH = "/dais/fs/scratch/dduka/databases/ego4d/video_lengths.json"
 
 PROMPT_TEMPLATE = """
     TASK: Temporal localization in egocentric video.
@@ -77,28 +78,31 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
         self._compute_video_lengths()
 
     def _compute_video_lengths(self):
+        if DEFAULT_VIDEO_LEN_PATH != "" and os.path.exists(DEFAULT_VIDEO_LEN_PATH):
+            print("Loading from saved video lengths file...")
+            with open(DEFAULT_VIDEO_LEN_PATH, "r") as f:
+                self.video_lengths = json.load(f)
+                return
+
         self.video_lengths = {}
         for current_dir, _, files in tqdm(
             os.walk(self.video_root), desc="Computing video lengths..."
         ):
-            if not current_dir.endswith(".mp4"):
-                continue
-
-            folder_name = os.path.basename(current_dir)
-            video_id = os.path.splitext(folder_name)[0]
-
             chunks = [f for f in files if f.endswith(".mp4")]
-
             if not chunks:
                 continue
 
-            last_chunk = max(chunks, key=lambda x: int(x[:-4]))
-            last_path = os.path.join(current_dir, last_chunk)
-            duration = self._get_video_duration(last_path)
+            video_id = os.path.basename(current_dir)
 
-            self.video_lengths[video_id] = (
-                len(chunks) - 1
-            ) * self.chunk_len_sec + duration
+            try:
+                last_chunk = max(chunks, key=lambda x: int(os.path.splitext(x)[0]))
+                last_path = os.path.join(current_dir, last_chunk)
+                duration = self._get_video_duration(last_path)
+
+                last_chunk_start_time = float(os.path.splitext(last_chunk)[0])
+                self.video_lengths[video_id] = last_chunk_start_time + duration
+            except ValueError:
+                continue
 
     def _get_video_duration(self, file_path):
         try:
@@ -147,11 +151,19 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
         row = self.all_rows[idx]
         uuid, video_id, start, end, caption = row
 
+        if video_id not in self.video_lengths:
+            print(f"Skipping video_id: {video_id}")
+            return None
+
         padded_start = max(0.0, start - self.padding)
         padded_end = min(end + self.padding, self.video_lengths[video_id])
 
-        # Get chunks covering the WIDER padded range
         chunk_ids = self._get_covering_chunk_ids(padded_start, padded_end)
+        if chunk_ids is None or len(chunk_ids) == 0:
+            print(
+                f"No chunks found for VIDEO ID: {video_id} with START: {start} and END: {end} with LEN: {self.video_lengths[video_id]}"
+            )
+            return None
 
         paths = []
         for cid in chunk_ids:
@@ -211,7 +223,7 @@ def load_chunk_tensor(video_path, fps, max_pixels):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run Qwen3-VL inference on Ego4D dataset chunks."
+        description="Run Qwen-VL inference on Ego4D dataset chunks."
     )
 
     # Model and Hardware Config
@@ -230,7 +242,7 @@ def main():
     parser.add_argument(
         "--tensor_parallel_size",
         type=int,
-        default=4,
+        default=1,
         help="Number of GPUs for tensor parallelism.",
     )
 
@@ -346,7 +358,7 @@ def main():
     sampling_params = SamplingParams(
         temperature=0.1,
         top_p=0.9,
-        max_tokens=2048,
+        max_tokens=512,
         repetition_penalty=1.05,
     )
 
@@ -364,10 +376,19 @@ def main():
         while current_idx < end_idx:
             batch_end = min(current_idx + args.batch_size, end_idx)
             batch_indices = range(current_idx, batch_end)
-            batch_items = [dataset[idx] for idx in batch_indices]
 
+            batch_items_raw = [dataset[idx] for idx in batch_indices]
+
+            valid_batch_items = [item for item in batch_items_raw if item is not None]
+
+            if not valid_batch_items:
+                pbar.update(len(batch_indices))
+                current_idx = batch_end
+                continue
+
+            # --- 1. Cache Video Tensors for this Batch ---
             unique_paths = set()
-            for item in batch_items:
+            for item in valid_batch_items:
                 unique_paths.update(item["chunks"])
 
             chunk_cache = {}
@@ -379,10 +400,11 @@ def main():
                     if tensor_output is not None:
                         chunk_cache[path] = tensor_output
 
+            # --- 2. Construct vLLM Inputs ---
             vllm_inputs_batch = []
             metadata_batch = []
 
-            for item in batch_items:
+            for item in valid_batch_items:
                 content_list = []
                 combined_video_tensors = []
                 valid_item = True
@@ -413,6 +435,7 @@ def main():
                     )
                     metadata_batch.append(item)
 
+            # --- 3. Generate ---
             if vllm_inputs_batch:
                 try:
                     outputs = llm.generate(
@@ -423,6 +446,7 @@ def main():
                         generated_text = output.outputs[0].text
                         meta = metadata_batch[j]
 
+                        # --- 4. Robust JSON Parsing ---
                         try:
                             clean_text = (
                                 generated_text.replace("```json", "")
@@ -458,6 +482,9 @@ def main():
 
                 except Exception as e:
                     print(f"Inference error in batch starting at {current_idx}: {e}")
+                    import traceback
+
+                    traceback.print_exc()
 
             pbar.update(len(batch_indices))
             current_idx = batch_end

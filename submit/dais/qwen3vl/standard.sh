@@ -17,7 +17,7 @@
 # Chunk Size:  100,000
 # Total Tasks: 4,012,544 / 100,000 = 40.12 -> 41 tasks.
 # Array Indices: 0 to 40
-#SBATCH --array=0-40%10
+#SBATCH --array=0-40%20
 
 cd /u/dduka/project/AVION/
 
