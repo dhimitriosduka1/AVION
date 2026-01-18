@@ -365,17 +365,51 @@ def main():
     print(f"Starting batched processing. Batch Size: {args.batch_size}")
     total_start_time = time.time()
 
+    # Load already processed UUIDs from existing output file
+    processed_uuids = set()
+    if final_output_path and final_output_path.exists():
+        try:
+            with open(final_output_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        entry = json.loads(line)
+                        processed_uuids.add(entry["uuid"])
+            print(
+                f"Found {len(processed_uuids)} already processed entries in output file."
+            )
+        except Exception as e:
+            print(f"Warning: Could not read existing output file: {e}")
+
+    # Check if all items are already processed
+    if len(processed_uuids) == end_idx - start_idx:
+        print(
+            f"All captions are processed ({len(processed_uuids)} entries), exiting..."
+        )
+        exit(0)
+
+    # Filter out the already computed indices
+    indices_to_process = []
+    for idx in range(start_idx, end_idx):
+        item = dataset[idx]
+        if item is not None and item["uuid"] not in processed_uuids:
+            indices_to_process.append(idx)
+
+    print(
+        f"Indices to process after filtering: {len(indices_to_process)} (skipped {end_idx - start_idx - len(indices_to_process)} already processed)"
+    )
+
     out_f = None
     if final_output_path:
-        out_f = open(final_output_path, "w", encoding="utf-8")
+        out_f = open(final_output_path, "a", encoding="utf-8")
 
-    current_idx = start_idx
-    pbar = tqdm(total=end_idx - start_idx)
+    current_idx = 0  # Now indexes into indices_to_process
+    pbar = tqdm(total=len(indices_to_process))
 
     try:
-        while current_idx < end_idx:
-            batch_end = min(current_idx + args.batch_size, end_idx)
-            batch_indices = range(current_idx, batch_end)
+        while current_idx < len(indices_to_process):
+            batch_end = min(current_idx + args.batch_size, len(indices_to_process))
+            batch_indices = indices_to_process[current_idx:batch_end]
 
             batch_items_raw = [dataset[idx] for idx in batch_indices]
 
