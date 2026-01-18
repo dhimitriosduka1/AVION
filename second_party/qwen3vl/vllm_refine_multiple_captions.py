@@ -356,7 +356,7 @@ def main():
     tokenizer = llm.get_tokenizer()
 
     sampling_params = SamplingParams(
-        temperature=0.1, top_p=0.9, max_tokens=512, repetition_penalty=1.05, n=10
+        temperature=0.7, top_p=0.9, max_tokens=512, repetition_penalty=1.05, n=10
     )
 
     print(f"Starting batched processing. Batch Size: {args.batch_size}")
@@ -474,23 +474,29 @@ def main():
                     )
 
                     for j, output in enumerate(outputs):
-                        generated_text = output.outputs[0].text
                         meta = metadata_batch[j]
+                        all_responses = []
 
-                        # --- 4. Robust JSON Parsing ---
-                        try:
-                            clean_text = (
-                                generated_text.replace("```json", "")
-                                .replace("```", "")
-                                .strip()
-                            )
-                            model_json_output = json.loads(clean_text)
-                        except json.JSONDecodeError:
-                            model_json_output = {
-                                "raw_output": generated_text,
-                                "error": "Model output not valid JSON",
-                            }
+                        # Loop over all 'n' generated sequences
+                        for sequence in output.outputs:
+                            generated_text = sequence.text
 
+                            # --- 4. Robust JSON Parsing per sequence ---
+                            try:
+                                clean_text = (
+                                    generated_text.replace("```json", "")
+                                    .replace("```", "")
+                                    .strip()
+                                )
+                                model_json_output = json.loads(clean_text)
+                            except json.JSONDecodeError:
+                                model_json_output = {
+                                    "raw_output": generated_text,
+                                    "error": "Model output not valid JSON",
+                                }
+                            all_responses.append(model_json_output)
+
+                        # Save list of all 10 responses
                         result_entry = {
                             "uuid": meta["uuid"],
                             "video_id": meta["video_id"],
@@ -501,7 +507,7 @@ def main():
                             "caption": meta["caption"],
                             "base_offset": meta["base_offset"],
                             "padding_used": args.video_padding,
-                            "model_output": model_json_output,
+                            "model_outputs": all_responses,
                         }
 
                         if out_f:
@@ -509,7 +515,10 @@ def main():
                             out_f.write(json_line + "\n")
                             out_f.flush()
                         else:
-                            print(f"[UUID: {meta['uuid']}] Output: {generated_text}")
+                            # Print just the first response as a sample
+                            print(
+                                f"[UUID: {meta['uuid']}] Sample 1/10: {all_responses[0]}"
+                            )
 
                 except Exception as e:
                     print(f"Inference error in batch starting at {current_idx}: {e}")
