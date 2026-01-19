@@ -147,8 +147,11 @@ for sample in tqdm(merged_results, desc="Processing rows"):
         nr_fallback_samples += 1
     else:
         base_offset = sample["base_offset"]
-        start = base_offset + sample["model_output"]["start"]
-        end = base_offset + sample["model_output"]["end"]
+        start = max(0.0, base_offset + sample["model_output"]["start"])
+        end = min(
+            base_offset + sample["model_output"]["end"],
+            video_len_dict[sample["video_id"]],
+        )
 
         if start > end:
             results.append(original_sample)
