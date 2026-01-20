@@ -64,6 +64,7 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
         self.fps = int(fps)
         self.chunk_len_sec = chunk_len_sec
         self.padding = padding
+        self.nr_samples_processed = 0
 
         print(f"Loading dataset from {pkl_path}...")
         # Expects: uuid, video_id, start, end, caption
@@ -134,12 +135,20 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
         first_chunk = self._chunk_id_from_time(start)
         last_chunk = self._chunk_id_from_time(end)
 
+        if self.nr_samples_processed < 100:
+            print(
+                f"Before padding first_chunk: {first_chunk}, last_chunk: {last_chunk}"
+            )
+
         if self.padding != 0:
             first_chunk = max(0, first_chunk - self.chunk_len_sec * self.padding)
             last_chunk = min(
                 last_chunk + self.chunk_len_sec * self.padding,
                 self._chunk_id_from_time(self.video_lengths[video_id]),
             )
+
+        if self.nr_samples_processed < 100:
+            print(f"After padding first_chunk: {first_chunk}, last_chunk: {last_chunk}")
 
         chunks = []
         curr = first_chunk
@@ -176,6 +185,9 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
 
         rel_start = start - base_offset
         rel_end = end - base_offset
+
+        # Increment the number of samples processed
+        self.nr_samples_processed += 1
 
         return {
             "uuid": uuid,
