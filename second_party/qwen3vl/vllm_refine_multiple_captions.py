@@ -20,7 +20,7 @@ DEFAULT_FPS = 8
 DEFAULT_MAX_PIXELS = 360 * 420
 DEFAULT_PKL_PATH = "/dais/fs/scratch/dduka/databases/ego4d/ego4d_train_with_uuid.pkl"
 DEFAULT_VIDEO_ROOT = "/dais/fs/scratch/dduka/databases/ego4d/video_320px_15sec/"
-DEFAULT_PADDING = 0.0
+DEFAULT_PADDING = 0
 DEFAULT_OUTPUT_FILE_PATH = (
     "/dais/fs/scratch/dduka/databases/ego4d/qwen_refinement/output.jsonl"
 )
@@ -286,7 +286,7 @@ def main():
     )
     parser.add_argument(
         "--video_padding",
-        type=float,
+        type=int,
         default=DEFAULT_PADDING,
         help="Seconds of padding to add before and after the action window (adds context).",
     )
