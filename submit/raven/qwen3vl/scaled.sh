@@ -10,7 +10,7 @@
 
 #SBATCH --gres=gpu:4
 #SBATCH --constraint="gpu"
-#SBATCH --cpus-per-task=721
+#SBATCH --cpus-per-task=72
 
 #SBATCH --time=23:59:59
 
