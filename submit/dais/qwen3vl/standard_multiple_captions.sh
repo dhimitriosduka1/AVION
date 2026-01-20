@@ -12,12 +12,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=1000000
 
-# --- JOB ARRAY CONFIGURATION ---
-# Total Items: 4,012,544
-# Chunk Size:  100,000
-# Total Tasks: 4,012,544 / 100,000 = 40.12 -> 41 tasks.
-# Array Indices: 0 to 40
-#SBATCH --array=0-40%20
+#SBATCH --array=0-40%4
 
 cd /u/dduka/project/AVION/
 

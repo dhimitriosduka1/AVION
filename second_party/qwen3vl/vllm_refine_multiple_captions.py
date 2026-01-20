@@ -20,7 +20,7 @@ DEFAULT_FPS = 8
 DEFAULT_MAX_PIXELS = 360 * 420
 DEFAULT_PKL_PATH = "/dais/fs/scratch/dduka/databases/ego4d/ego4d_train_with_uuid.pkl"
 DEFAULT_VIDEO_ROOT = "/dais/fs/scratch/dduka/databases/ego4d/video_320px_15sec/"
-DEFAULT_PADDING = 0.0
+DEFAULT_PADDING = 0
 DEFAULT_OUTPUT_FILE_PATH = (
     "/dais/fs/scratch/dduka/databases/ego4d/qwen_refinement/output.jsonl"
 )
@@ -130,17 +130,22 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
     def _chunk_id_from_time(self, t):
         return int(math.floor(t / self.chunk_len_sec) * self.chunk_len_sec)
 
-    def _get_covering_chunk_ids(self, start, end):
+    def _get_covering_chunk_ids(self, video_id, start, end):
         first_chunk = self._chunk_id_from_time(start)
         last_chunk = self._chunk_id_from_time(end)
 
+        if self.padding != 0:
+            first_chunk = max(0, first_chunk - self.chunk_len_sec * self.padding)
+            last_chunk = min(
+                last_chunk + self.chunk_len_sec * self.padding,
+                self._chunk_id_from_time(self.video_lengths[video_id]),
+            )
+
         chunks = []
         curr = first_chunk
-
-        # Ensure we capture all chunks covering the time range
         while curr <= last_chunk:
-            chunks.append(curr)
-            curr += int(self.chunk_len_sec)
+            chunks.append(int(curr))
+            curr += self.chunk_len_sec
 
         return chunks
 
@@ -155,10 +160,7 @@ class Ego4DChunkedTemporalDataset(torch.utils.data.Dataset):
             print(f"Skipping video_id: {video_id}")
             return None
 
-        padded_start = max(0.0, start - self.padding)
-        padded_end = min(end + self.padding, self.video_lengths[video_id])
-
-        chunk_ids = self._get_covering_chunk_ids(padded_start, padded_end)
+        chunk_ids = self._get_covering_chunk_ids(video_id, start, end)
         if chunk_ids is None or len(chunk_ids) == 0:
             print(
                 f"No chunks found for VIDEO ID: {video_id} with START: {start} and END: {end} with LEN: {self.video_lengths[video_id]}"
@@ -284,7 +286,7 @@ def main():
     )
     parser.add_argument(
         "--video_padding",
-        type=float,
+        type=int,
         default=DEFAULT_PADDING,
         help="Seconds of padding to add before and after the action window (adds context).",
     )
