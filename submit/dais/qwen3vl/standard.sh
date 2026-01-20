@@ -42,6 +42,10 @@ echo "Processing:   $START_IDX to $END_IDX"
 echo "Batch Size:   $CHUNK_SIZE"
 echo "================================================="
 
+module purge
+module load gcc/14
+module load cuda/12.8
+
 # 4. Run the Python Script
 uv run ./second_party/qwen3vl/vllm_refine.py \
     --start_idx $START_IDX \

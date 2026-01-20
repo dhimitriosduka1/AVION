@@ -1,8 +1,8 @@
 #!/bin/bash -l
-#SBATCH -o /dais/fs/scratch/dduka/logs/avion/scaled_%A_%a_%x_%j_%N.out
-#SBATCH -e /dais/fs/scratch/dduka/logs/avion/scaled_%A_%a_%x_%j_%N.err
+#SBATCH -o /dais/fs/scratch/dduka/logs/avion/standard_%A_%a_%x_%j_%N.out
+#SBATCH -e /dais/fs/scratch/dduka/logs/avion/standard_%A_%a_%x_%j_%N.err
 
-#SBATCH -J scaled_vllm
+#SBATCH -J standard_vllm_mean
 
 #SBATCH --time=23:59:59
 #SBATCH --nodes=1
@@ -47,10 +47,10 @@ module load gcc/14
 module load cuda/12.8
 
 # 4. Run the Python Script
-uv run ./second_party/qwen3vl/vllm_refine.py \
+uv run ./second_party/qwen3vl/vllm_refine_multiple_captions.py \
     --start_idx $START_IDX \
     --end_idx $END_IDX \
     --batch_size 512 \
     --tensor_parallel_size 4 \
-    --output_file /dais/fs/scratch/dduka/databases/ego4d/qwen_refinement/scaled/output_1_caption.jsonl \
-    --pkl_path /dais/fs/scratch/dduka/databases/ego4d/random_shift/ego4d_train_random_shift_2.1_2.1_1.0_with_uuid.pkl
+    --output_file /dais/fs/scratch/dduka/databases/ego4d/qwen_refinement/standard/output_10_caption.jsonl \
+    --pkl_path /dais/fs/scratch/dduka/databases/ego4d/ego4d_train_with_uuid.pkl
