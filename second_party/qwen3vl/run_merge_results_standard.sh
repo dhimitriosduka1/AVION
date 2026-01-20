@@ -6,4 +6,3 @@ python3 /u/dduka/project/AVION/second_party/qwen3vl/merge_results.py \
     --output-file /dais/fs/scratch/dduka/databases/ego4d/qwen_refinement/standard/pickle/ego4d_train_standard_1_caption_vllm_with_uuid.pkl \
     --num-of-captions 1 \
     --original-ego4d-path /dais/fs/scratch/dduka/databases/ego4d/ego4d_train_with_uuid.pkl \
-

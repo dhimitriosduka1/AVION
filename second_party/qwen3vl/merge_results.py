@@ -153,18 +153,17 @@ for sample in tqdm(merged_results, desc="Processing rows"):
             video_len_dict[sample["video_id"]],
         )
 
-        if start > end:
-            results.append(original_sample)
-            refined_lengths.append(original_sample[3] - original_sample[2])
-            nr_fallback_samples += 1
-        else:
+        if end > start:
             refined_length = end - start
             refined_lengths.append(refined_length)
             results.append(
                 (sample_id, sample["video_id"], start, end, sample["caption"])
             )
             nr_high_confidence_samples += 1
-
+        else:
+            results.append(original_sample)
+            refined_lengths.append(original_sample[3] - original_sample[2])
+            nr_fallback_samples += 1
 
 # Print stats about how the process went
 print(f"\n{'='*60}")
