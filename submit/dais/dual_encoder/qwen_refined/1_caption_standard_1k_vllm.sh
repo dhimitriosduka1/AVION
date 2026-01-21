@@ -4,7 +4,7 @@
 #SBATCH -e /dais/fs/scratch/dduka/logs/avion/dual_encoder_1_caption_%N.err
 
 #SBATCH -J de_one_caption
-#SBATCH --time=23:59:59
+#SBATCH --time=11:59:59
 
 #SBATCH --nodes=1
 #SBATCH --partition="gpu1"
@@ -14,9 +14,6 @@
 #SBATCH --gres=gpu:h200:4
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=1000000
-
-#SBATCH --mail-user=dduka@mpi-inf.mpg.de
-#SBATCH --mail-type=BEGIN,END,FAIL
 
 module purge
 micromamba activate avion_fa2
@@ -37,7 +34,7 @@ echo "GPUs per node: $SLURM_GPUS_ON_NODE"
 
 cd /u/dduka/project/AVION
 
-RUN_NAME=DAIS_DUAL_ENC_1_CAPTION_QWEN3VL_1e-5
+RUN_NAME=DAIS_DUAL_ENC_1_CAPTION_QWEN3VL_1k_VLLM
 EXP_PATH=/dais/fs/scratch/dduka/training_metadata/avion/$RUN_NAME
 
 mkdir -p $EXP_PATH
@@ -66,5 +63,4 @@ srun --cpu_bind=v --accel-bind=gn torchrun \
     --wandb-run-name $RUN_NAME \
     --workers 32 \
     --prefetch-factor 4 \
-    --train-metadata /dais/fs/scratch/dduka/databases/ego4d/qwen_refinement/standard/pickle/ego4d_train_standard_1_caption_vllm.pkl \
-    --lr 1e-5 \
+    --train-metadata /dais/fs/scratch/dduka/databases/ego4d/qwen_refinement/standard/pickle/ego4d_train_standard_1_caption_1k_subset_vllm.pkl \
