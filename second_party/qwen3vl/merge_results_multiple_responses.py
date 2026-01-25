@@ -1,4 +1,3 @@
-from sklearn.metrics import ConfusionMatrixDisplay
 import argparse
 import glob
 import json
@@ -188,52 +187,6 @@ def compute_temporal_iou_distance_matrix(intervals):
     return dist_matrix
 
 
-def cluster_temporal_segments(model_answers, distance_threshold=0.10):
-    """
-    Cluster temporal segments based on IoU similarity using Agglomerative Clustering.
-
-    Args:
-        model_answers: List of temporal interval strings like "(start, end)"
-        distance_threshold: Maximum distance for merging clusters (1 - min_iou).
-                           Default 0.3 means segments with IoU >= 0.7 will be merged.
-
-    Returns:
-        tuple: (cluster_labels, parsed_intervals, valid_indices)
-            - cluster_labels: Array of cluster labels for valid intervals
-            - parsed_intervals: List of parsed (start, end) tuples
-            - valid_indices: List of original indices that had valid intervals
-    """
-    # Parse all intervals
-    parsed_intervals = []
-    valid_indices = []
-
-    for idx, ans in enumerate(model_answers):
-        interval = parse_temporal(ans)
-        if interval is not None and interval[0] <= interval[1]:
-            parsed_intervals.append(interval)
-            valid_indices.append(idx)
-
-    if len(parsed_intervals) == 0:
-        return np.array([]), [], []
-
-    if len(parsed_intervals) == 1:
-        # Only one valid interval, it's its own cluster
-        return np.array([0]), parsed_intervals, valid_indices
-
-    # Compute IoU distance matrix
-    dist_matrix = compute_temporal_iou_distance_matrix(parsed_intervals)
-
-    # Perform agglomerative clustering
-    clustering = AgglomerativeClustering(
-        n_clusters=None,
-        distance_threshold=distance_threshold,
-        metric="precomputed",
-        linkage="average",
-    ).fit(dist_matrix)
-
-    return clustering.labels_, parsed_intervals, valid_indices
-
-
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Merge results from refinement script outputs"
@@ -310,9 +263,9 @@ final_results = []
 original_lengths = []
 refined_lengths = []
 nr_fallback_samples = 0
+nr_non_parsable_samples = 0
 
 for sample in tqdm(merged_results, desc="Processing rows"):
-
     sample_id = sample["uuid"]
     original_sample = original_captions_dict.get(sample_id)
     original_length = original_sample[3] - original_sample[2]
@@ -323,48 +276,29 @@ for sample in tqdm(merged_results, desc="Processing rows"):
         confidence = res.get("confidence", 0)
         error = res.get("error", None)
 
-        if error or confidence < 0.9:
+        if error or confidence < 0.9 or "start" not in res or "end" not in res:
+            nr_non_parsable_samples += 1
             continue
 
         start = res["start"]
         end = res["end"]
 
         if start > end:
+            nr_non_parsable_samples += 1
             continue
 
         if start < 0 or end < 0:
+            nr_non_parsable_samples += 1
             continue
 
         responses.append((start, end))
 
     # Here I have all the valid responses
-    estimated_label = None
-    if len(responses) == 0:
+    if len(responses) == 0 or len(responses) == 1:
         # No valid was found, fallback to original
         refined_lengths.append(original_sample[3] - original_sample[2])
         final_results.append(original_sample)
         nr_fallback_samples += 1
-    elif len(responses) == 1:
-        start = responses[0]
-        end = responses[1]
-
-        base_offset = sample["base_offset"]
-        start = max(0.0, base_offset + start)
-        end = min(
-            base_offset + end,
-            video_len_dict[sample["video_id"]],
-        )
-
-        if end > start:
-            refined_length = end - start
-            refined_lengths.append(refined_length)
-            final_results.append(
-                (sample_id, sample["video_id"], start, end, sample["caption"])
-            )
-        else:
-            final_results.append(original_sample)
-            refined_lengths.append(original_sample[3] - original_sample[2])
-            nr_fallback_samples += 1
     else:
         # Compute distance matrix
         dist_matrix = compute_temporal_iou_distance_matrix(responses)
@@ -372,7 +306,7 @@ for sample in tqdm(merged_results, desc="Processing rows"):
         # Cluster the results
         clustering = AgglomerativeClustering(
             n_clusters=None,
-            distance_threshold=0.9,
+            distance_threshold=0.1,
             metric="precomputed",
             linkage="average",
         ).fit(dist_matrix)
@@ -406,8 +340,8 @@ for sample in tqdm(merged_results, desc="Processing rows"):
                 (sample_id, sample["video_id"], start, end, sample["caption"])
             )
         else:
-            final_results.append(original_sample)
             refined_lengths.append(original_sample[3] - original_sample[2])
+            final_results.append(original_sample)
             nr_fallback_samples += 1
 
 print(f"\n{'='*60}")
@@ -417,6 +351,7 @@ print(f"Total samples processed: {len(final_results)}")
 print(
     f"Fallback to original: {nr_fallback_samples} ({100 * nr_fallback_samples / len(final_results):.2f}%)"
 )
+print(f"Non parsable samples: {nr_non_parsable_samples}")
 print(f"{'='*60}")
 
 if original_lengths and refined_lengths:
