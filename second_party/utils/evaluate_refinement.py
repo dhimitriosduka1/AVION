@@ -7,13 +7,7 @@ import numpy as np
 
 
 def compute_1d_iou(seg1, seg2):
-    """
-    Computes Intersection over Union (IoU) for two 1D segments.
 
-    Args:
-        seg1 (tuple): (start, end) of the first segment.
-        seg2 (tuple): (start, end) of the second segment.
-    """
     start1, end1 = seg1
     start2, end2 = seg2
 
@@ -41,7 +35,12 @@ def main():
         "--csv", "-c", type=str, required=True, help="Path to manually annotated CSV."
     )
     parser.add_argument(
-        "--pkl", "-p", type=str, required=True, help="Path to data pickle file."
+        "--pkl",
+        "-p",
+        nargs="+",
+        type=str,
+        required=True,
+        help="Path to data pickle file(s).",
     )
     args = parser.parse_args()
 
@@ -81,50 +80,69 @@ def main():
 
     print(f"Indexed {len(csv_lookup)} annotations from CSV.")
 
-    # --- 2. Load Pickle Data ---
-    if not os.path.exists(args.pkl):
-        sys.exit(f"Error: Pickle not found at {args.pkl}")
+    # --- Loop over pickle files ---
+    for pkl_path in args.pkl:
+        print(f"\n{'='*40}")
+        print(f"Processing Pickle: {pkl_path}")
+        print(f"{'='*40}")
 
-    print(f"Loading Pickle: {args.pkl}...")
-    with open(args.pkl, "rb") as f:
-        pkl_data = pkl.load(f)
+        # --- 2. Load Pickle Data ---
+        if not os.path.exists(pkl_path):
+            print(f"Error: Pickle not found at {pkl_path}")
+            continue
 
-    # --- 3. Compute IoUs ---
-    iou_results = []
-    matches_found = 0
+        print(f"Loading Pickle: {pkl_path}...")
+        with open(pkl_path, "rb") as f:
+            pkl_data = pkl.load(f)
 
-    print("Computing IoUs...")
+        # --- 3. Compute IoUs ---
+        iou_results = []
+        matches_found = 0
 
-    for row in pkl_data:
-        # Structure assumption: row[0] is uuid, row[1] is segment (start, end)
-        pkl_uuid = str(row[0])
+        print("Computing IoUs...")
 
-        if pkl_uuid in csv_lookup:
-            matches_found += 1
+        for row in pkl_data:
+            # Structure assumption: row[0] is uuid, row[1] is segment (start, end)
+            pkl_uuid = str(row[0])
 
-            # Extract segments
-            csv_seg = csv_lookup[pkl_uuid]
-            pkl_seg = (row[2], row[3])  # Assuming row[1] is (start, end)
+            if pkl_uuid in csv_lookup:
+                matches_found += 1
 
-            # Compute IoU
-            iou = compute_1d_iou(csv_seg, pkl_seg)
+                # Extract segments
+                csv_seg = csv_lookup[pkl_uuid]
+                pkl_seg = (row[2], row[3])  # Assuming row[1] is (start, end)
 
-            iou_results.append(
-                {"uuid": pkl_uuid, "csv_seg": csv_seg, "pkl_seg": pkl_seg, "iou": iou}
-            )
+                # Compute IoU
+                iou = compute_1d_iou(csv_seg, pkl_seg)
 
-    # --- 4. Summary ---
-    print("-" * 30)
-    print(f"Total Matches Processed: {matches_found}")
+                iou_results.append(
+                    {
+                        "uuid": pkl_uuid,
+                        "csv_seg": csv_seg,
+                        "pkl_seg": pkl_seg,
+                        "iou": iou,
+                    }
+                )
 
-    if iou_results:
-        avg_iou = np.mean([r["iou"] for r in iou_results])
-        print(f"Average IoU: {(100 * avg_iou):.4f}")
-        print(f"Min IoU: {(100 * np.min([r['iou'] for r in iou_results])):.4f}")
-        print(f"Max IoU: {(100 * np.max([r['iou'] for r in iou_results])):.4f}")
-    else:
-        print("No matches found between CSV and Pickle UUIDs.")
-    print("-" * 30)
+        # --- 4. Summary ---
+        print("-" * 30)
+        print(f"Total Matches Processed: {matches_found}")
+
+        if iou_results:
+            ious = [r["iou"] for r in iou_results]
+            avg_iou = np.mean(ious)
+            print(f"Average IoU: {(100 * avg_iou):.4f}")
+            print(f"Min IoU: {(100 * np.min(ious)):.4f}")
+            print(f"Max IoU: {(100 * np.max(ious)):.4f}")
+            print(f"Number of 0.0 IoU: {len(ious) - np.count_nonzero(ious)}")
+
+            thresholds = [0.1, 0.3, 0.5, 0.7, 1.0]
+            for t in thresholds:
+                recall = np.sum(np.array(ious) >= t) / len(ious)
+                print(f"IoU >= {t}: {recall * 100:.2f}%")
+        else:
+            print("No matches found between CSV and Pickle UUIDs.")
+        print("-" * 30)
 
 
 if __name__ == "__main__":
