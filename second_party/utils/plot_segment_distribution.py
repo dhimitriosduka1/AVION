@@ -2,7 +2,10 @@ import pickle as pkl
 import matplotlib.pyplot as plt
 import numpy as np
 import argparse
-import os
+import seaborn as sns
+
+sns.set_style("whitegrid")
+sns.set_palette("husl")
 
 
 def convert_to_supported_format(path):
@@ -38,7 +41,9 @@ def get_segment_lengths(data):
     return segment_lengths
 
 
-def plot_segment_distribution(segment_lengths, output_path=None, log_scale=False):
+def plot_segment_distribution(
+    segment_lengths, output_path=None, log_scale=False, title=""
+):
     """Plot the distribution of segment lengths as a histogram."""
     plt.figure(figsize=(10, 6))
 
@@ -46,7 +51,7 @@ def plot_segment_distribution(segment_lengths, output_path=None, log_scale=False
 
     plt.xlabel("Segment Length", fontsize=12)
     plt.ylabel("Frequency", fontsize=12)
-    title = "Distribution of Segment Lengths"
+    title = f"Distribution of Segment Lengths: {title}"
     if log_scale:
         plt.yscale("log")
         title += " (Log Scale)"
@@ -118,7 +123,7 @@ def main():
     print(f"Min length: {min(segment_lengths):.2f}")
     print(f"Max length: {max(segment_lengths):.2f}")
 
-    plot_segment_distribution(segment_lengths, args.output, args.log)
+    plot_segment_distribution(segment_lengths, args.output, args.log, title=base_name)
 
 
 if __name__ == "__main__":
