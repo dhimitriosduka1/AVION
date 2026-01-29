@@ -13,7 +13,7 @@
 #SBATCH --cpus-per-task=72
 
 #SBATCH --time=23:59:59
-#SBATCH --array=0-40%4
+#SBATCH --array=0-40%5
 
 #SBATCH --mail-user=dduka@mpi-inf.mpg.de
 #SBATCH --mail-type=BEGIN,END,FAIL

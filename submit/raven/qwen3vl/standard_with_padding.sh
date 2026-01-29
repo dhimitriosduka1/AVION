@@ -13,7 +13,7 @@
 #SBATCH --cpus-per-task=72
 
 #SBATCH --time=23:59:59
-#SBATCH --array=0-40%4
+#SBATCH --array=0-40%5
 
 #SBATCH --mail-user=dduka@mpi-inf.mpg.de
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -49,5 +49,5 @@ uv run ./second_party/qwen3vl/vllm_refine.py \
     --tensor_parallel_size 4 \
     --output_file /ptmp/dduka/databases/ego4d/qwen_refinement/standard/output_1_caption_1_padding.jsonl \
     --pkl_path /ptmp/dduka/databases/ego4d/ego4d_train_with_uuid.pkl \
-    --video_root /ptmp/dduka/databases/ego4d/video_320px_15se/ \
+    --video_root /ptmp/dduka/databases/ego4d/video_320px_15sec/ \
     --video_padding 1 \
