@@ -12,9 +12,9 @@ plt.style.use(["science", "no-latex", "grid"])
 # 2. Metric Definitions
 task_metrics = [
     "test_ego4d_cls_top1",
-    "test_charades_mAP",
     "test_ego4d_mir_avg_map",
     "test_ego4d_mir_avg_ndcg",
+    "test_charades_mAP",
     "test_egtea_mean_class_acc",
     "test_egtea_top1_acc",
 ]
@@ -22,12 +22,12 @@ alignment_metric = ["alignment"]
 all_metrics = task_metrics + alignment_metric
 
 labels = [
-    "Ego4D Cls Top-1",
-    "Charades mAP",
-    "Ego4D MIR Avg mAP",
-    "Ego4D MIR Avg nDCG",
-    "EGTEA Mean Class Acc",
-    "EGTEA Top-1 Acc",
+    "EK-100 Recognition (top-1 acc.)",
+    "EK-100 MIR (mAP)",
+    "EK-100 MIR (nDCG)",
+    "CharadesEgo mAP",
+    "EGTEA Recognition (mean acc.)",
+    "EGTEA Recognition (top-1 acc.)",
     "Alignment",
 ]
 metric_to_label = dict(zip(all_metrics, labels))
@@ -39,13 +39,17 @@ def plot_final_clean_version(data, baseline_name, title, filename):
         return
 
     # --- Data Processing ---
+    # Get the baseline values as a Series
     baseline_vals = data.loc[data["run_name"] == baseline_name, all_metrics].iloc[0]
 
     improvement = data.copy()
     for m in all_metrics:
-        improvement[m] = improvement[m] - baseline_vals[m]
+        improvement[m] = ((improvement[m] - baseline_vals[m]))
 
+    # Average of the percentage improvements for tasks
     improvement["Mean (Tasks Only)"] = improvement[task_metrics].mean(axis=1)
+
+    # Filter out the baseline itself from the plot
     plot_df = improvement[improvement["run_name"] != baseline_name].copy()
 
     plot_metrics = all_metrics + ["Mean (Tasks Only)"]
@@ -66,7 +70,6 @@ def plot_final_clean_version(data, baseline_name, title, filename):
     long = long.dropna(subset=["value"]).copy()
 
     # --- Figure Construction ---
-    # Increased figsize slightly for better margins
     fig, ax = plt.subplots(figsize=(20, 15))
 
     # Alternating row backgrounds
@@ -93,7 +96,7 @@ def plot_final_clean_version(data, baseline_name, title, filename):
     # Vertical Baseline
     ax.axvline(0, color="black", lw=1.5, zorder=4)
 
-    # --- Large Label Sizes ---
+    # --- Labels ---
     ax.tick_params(axis="y", labelsize=20)
     ax.tick_params(axis="x", labelsize=18)
 
@@ -110,18 +113,17 @@ def plot_final_clean_version(data, baseline_name, title, filename):
     vals = long["value"].values
     if len(vals) > 0:
         v_min, v_max = np.min(vals), np.max(vals)
-        x_range = v_max - v_min
-        if x_range < 1e-9:
-            x_range = 1.0
-        # Increased x-padding to 60% to ensure bar labels don't hit the edge
-        ax.set_xlim(v_min - (x_range * 0.6), v_max + (x_range * 0.6))
+        x_range = max(abs(v_min), abs(v_max))
+        # Ensure symmetric or at least padded range
+        ax.set_xlim(-x_range * 1.4, x_range * 1.4)
 
     for container in ax.containers:
         for rect in container:
             width = rect.get_width()
             if np.isnan(width) or abs(width) < 1e-4:
                 continue
-            offset = 0.6 if width > 0 else -0.6
+            # Dynamic offset based on bar direction
+            offset = (x_range * 0.02) if width > 0 else -(x_range * 0.02)
             ha = "left" if width > 0 else "right"
             ax.text(
                 width + offset,
@@ -134,9 +136,9 @@ def plot_final_clean_version(data, baseline_name, title, filename):
                 zorder=5,
             )
 
-    # --- Legend & Layout Padding ---
+    # --- Legend ---
     ax.legend(
-        title="Dataset Variant",
+        title="Model Variant",
         title_fontsize="20",
         loc="upper center",
         bbox_to_anchor=(0.5, -0.12),
@@ -146,10 +148,7 @@ def plot_final_clean_version(data, baseline_name, title, filename):
         borderaxespad=0.0,
     )
 
-    # Adding explicit padding around the subplots (left, right, top, bottom)
     plt.subplots_adjust(left=0.15, right=0.85, top=0.85, bottom=0.2)
-
-    # Save with tight layout and extra padding
     plt.savefig(filename, dpi=300, bbox_inches="tight", pad_inches=1.0)
     print(f"Plot saved: {filename}")
     plt.close()
@@ -162,7 +161,7 @@ def main():
     parser.add_argument(
         "--input",
         type=str,
-        default="/u/dduka/project/AVION/second_party/wandb_extractor/output/combined_peak_results.csv",
+        default="combined_peak_results.csv",
         help="Path to the input CSV results file.",
     )
     parser.add_argument(
@@ -180,35 +179,33 @@ def main():
 
     args = parser.parse_args()
 
-    # Load Data
     if not os.path.exists(args.input):
-        # Fallback for local
-        args.input = "combined_peak_results.csv"
-
-    try:
-        df = pd.read_csv(args.input)
-    except FileNotFoundError:
         print(f"Error: Could not find {args.input}")
         return
 
-    # --- Run Plotting ---
+    df = pd.read_csv(args.input)
+
+    # Identify LAVILA vs Dual Encoder runs
     lavila_df = df[df["run_name"].str.contains("LAVILA", na=False)].copy()
-    non_lavila_df = df[~df["run_name"].str.contains("LAVILA", na=False)].copy()
+    dual_df = df[df["run_name"].str.contains("DUAL_ENC", na=False)].copy()
+
+    # Create images directory if it doesn't exist
+    os.makedirs("images", exist_ok=True)
 
     if not lavila_df.empty:
         plot_final_clean_version(
             lavila_df,
             args.lavila_baseline,
-            "LaViLA Models Improvement",
-            "/u/dduka/project/AVION/images/lavila_relative_performance_boost.png",
+            "LaViLA Models: Relative Performance Boost",
+            "images/lavila_relative_performance_boost.png",
         )
 
-    if not non_lavila_df.empty:
+    if not dual_df.empty:
         plot_final_clean_version(
-            non_lavila_df,
+            dual_df,
             args.dual_enc_baseline,
-            "Dual Encoder Improvement",
-            "/u/dduka/project/AVION/images/dual_enc_relative_performance_boost.png",
+            "Dual Encoder Models: Relative Performance Boost",
+            "images/dual_enc_relative_performance_boost.png",
         )
 
 
