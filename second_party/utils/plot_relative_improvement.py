@@ -199,8 +199,8 @@ def main():
         plot_final_clean_version(
             lavila_df,
             args.lavila_baseline,
-            "LAVILA Models Improvement",
-            "/u/dduka/project/AVION/images/lavila_clean.png",
+            "LaViLA Models Improvement",
+            "/u/dduka/project/AVION/images/lavila_relative_performance_boost.png",
         )
 
     if not non_lavila_df.empty:
@@ -208,7 +208,7 @@ def main():
             non_lavila_df,
             args.dual_enc_baseline,
             "Dual Encoder Improvement",
-            "/u/dduka/project/AVION/images/dual_enc_clean.png",
+            "/u/dduka/project/AVION/images/dual_enc_relative_performance_boost.png",
         )
 
 
