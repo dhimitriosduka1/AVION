@@ -91,5 +91,13 @@ plt.savefig("/u/dduka/project/AVION/images/subset_samples_per_video_distribution
 plt.close()
 
 # Save the subset to a pickle file
-with open("/dais/fs/scratch/dduka/databases/ego4d/subset/ego4d_train_362k_subset.pkl", "wb") as f:
+with open(
+    "/dais/fs/scratch/dduka/databases/ego4d/subset/ego4d_train_362k_subset_with_uuid.pkl",
+    "wb",
+) as f:
     pkl.dump(subset, f)
+
+with open(
+    "/dais/fs/scratch/dduka/databases/ego4d/subset/ego4d_train_362k_subset.pkl", "wb"
+) as f:
+    pkl.dump([(s[1], s[2], s[3], s[4]) for s in subset], f)

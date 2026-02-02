@@ -259,6 +259,7 @@ def main(args):
             tags=[],
             resume="allow",
             config=vars(args),
+            dir="/dais/fs/scratch/dduka/logs"
         )
 
     model = getattr(model_clip, args.model)(
