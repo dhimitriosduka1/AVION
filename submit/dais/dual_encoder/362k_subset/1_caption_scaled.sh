@@ -1,10 +1,10 @@
 #!/bin/bash -l
 
-#SBATCH -o /dais/fs/scratch/dduka/logs/avion/lavila_2.1%A_%a_%x_%j_%N.out
-#SBATCH -e /dais/fs/scratch/dduka/logs/avion/lavila_2.1%A_%a_%x_%j_%N.err
+#SBATCH -o /dais/fs/scratch/dduka/logs/avion/dual_encoder_pretrain_1_caption_scaled_362K_%A_%a_%x_%j_%N.out
+#SBATCH -e /dais/fs/scratch/dduka/logs/avion/dual_encoder_pretrain_1_caption_scaled_362K_%A_%a_%x_%j_%N.err
 
-#SBATCH -J lavila_2.1
-#SBATCH --time=23:59:59
+#SBATCH -J de_1c_scaled_362k
+#SBATCH --time=09:59:59
 
 #SBATCH --nodes=1
 #SBATCH --partition="gpu1"
@@ -34,7 +34,7 @@ echo "GPUs per node: $SLURM_GPUS_ON_NODE"
 
 cd /u/dduka/project/AVION
 
-RUN_NAME=DAIS_LAVILA_x2.1_SCALED
+RUN_NAME=DAIS_DUAL_ENC_1_CAP_SCALED_362K
 EXP_PATH=/dais/fs/scratch/dduka/training_metadata/avion/$RUN_NAME
 
 mkdir -p $EXP_PATH
@@ -52,8 +52,6 @@ srun --cpu_bind=v --accel-bind=gn torchrun \
     --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
     --rdzv_backend=c10d \
     scripts/main_lavila_pretrain.py \
-    --train-metadata /dais/fs/scratch/dduka/databases/ego4d/ego4d_train.rephraser.no_punkt_top3_refined_2.1_scaled.pkl \
-    --train-metadata-aux /dais/fs/scratch/dduka/databases/ego4d/ego4d_train.narrator_63690737.return_10.pkl \
     --use-flash-attn \
     --grad-checkpointing \
     --use-fast-conv1 \
@@ -65,3 +63,4 @@ srun --cpu_bind=v --accel-bind=gn torchrun \
     --wandb-run-name $RUN_NAME \
     --workers 16 \
     --prefetch-factor 2 \
+    --train-metadata /dais/fs/scratch/dduka/databases/ego4d/subset/ego4d_train_362k_subset_scaled_1_cap.pkl
