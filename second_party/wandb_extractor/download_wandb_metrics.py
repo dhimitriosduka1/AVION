@@ -86,9 +86,7 @@ def main():
 
     all_best_states = []
     for rid in args.run_ids:
-        state = get_state_at_peak(
-            args.entity, args.project, rid, args.main_metric, args.window
-        )
+        state = get_state_at_peak(args.entity, args.project, rid, args.main_metric)
         if state is not None:
             all_best_states.append(state)
             # state.to_csv(
@@ -114,28 +112,42 @@ def main():
 
         print(display_df)
 
+        # Add a column for the run name before filtering
+        summary["run_name"] = summary["run_id"]
+
         # Filter the columns to save only the specified ones
         columns_to_keep = [
+            "run_name",
             "_step",
-            "test_ego4d_cls_top3",
-            "test_ego4d_mir_vis_map",
-            "logit_scale",
+            # "test_ego4d_cls_top3",
+            # "test_ego4d_mir_vis_map",
+            # "logit_scale",
             "test_ego4d_cls_top1",
-            "test_ego4d_mir_clip_acc",
+            # "test_ego4d_mir_clip_acc",
             "test_charades_mAP",
             "test_ego4d_cls_top5",
             "test_ego4d_mir_avg_map",
-            "test_ego4d_mir_txt_ndcg",
-            "test_ego4d_mcq_Intra-video",
+            # "test_ego4d_mir_txt_ndcg",
+            # "test_ego4d_mcq_Intra-video",
             "test_egtea_mean_class_acc",
             "test_egtea_top1_acc",
             "test_ego4d_mir_avg_ndcg",
-            "test_ego4d_mir_txt_map",
-            "test_ego4d_mcq_Inter-video",
-            "test_ego4d_cls_top10",
-            "test_ego4d_mir_vis_ndcg",
+            # "test_ego4d_mir_txt_map",
+            # "test_ego4d_mcq_Inter-video",
+            # "test_ego4d_cls_top10",
+            # "test_ego4d_mir_vis_ndcg",
         ]
         summary = summary[columns_to_keep]
+
+        # Scale metrics less than 1.0 by multiplying by 100
+        for column in columns_to_keep:
+            if summary[column].dtype in ["float64", "float32"]:
+                summary[column] = summary[column].apply(
+                    lambda x: x * 100 if x < 1.0 else x
+                )
+
+        # Round all numeric metrics to 3 decimal places
+        summary = summary.round(3)
 
         final_path = os.path.join(args.output_dir, "combined_peak_results.csv")
         summary.to_csv(final_path, index=False)
