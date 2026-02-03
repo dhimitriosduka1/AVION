@@ -26,8 +26,9 @@ def load_model():
 
 def should_merge_segments(merge_history):
     # Placeholder for model-based decision
+    # Returns "Yes", "No", or "Unsure"
     # For now, we always merge
-    return True
+    return "Yes"
 
 
 with open(ORIGINAL_DATA_PATH, "rb") as f:
@@ -65,7 +66,6 @@ print(f"Dataset contains {total_samples_after_dedup} samples after deduplication
 
 # Resolve overlapping captions with identical text
 results = []
-total_merged_count = 0
 
 for video_id, samples in tqdm(samples_by_video_id.items()):
     if not samples:
@@ -89,7 +89,6 @@ for video_id, samples in tqdm(samples_by_video_id.items()):
         if next_sample[2] <= current_merged[3] and curr_cap_norm == next_cap_norm:
             current_merged[3] = max(current_merged[3], next_sample[3])
             merge_history.append(next_sample)
-            total_merged_count += 1
         else:
             # Chain broken: Print debug if it was a multi-merge
             if len(merge_history) > 1:
@@ -98,20 +97,15 @@ for video_id, samples in tqdm(samples_by_video_id.items()):
                 # Here I need to decide if the segments should be merged or not
                 vlm_decision = should_merge_segments(merge_history)
 
-                if vlm_decision == "Yes":
-                    # Segments are merged, do nothing extra
-                    pass
-                elif vlm_decision == "No":
+                if vlm_decision == "No":
                     # Revert to original segments if not merging
-                    results.extend(merge_history)
-                    current_merged = list(next_sample)
-                    merge_history = [next_sample]
-                    continue
-                elif vlm_decision == "Unsure":
-                    # For 'Unsure', we choose to merge by default
-                    pass
+                    results.extend([tuple(s) for s in merge_history])
+                else:
+                    # "Yes" or "Unsure" - keep merged segment
+                    results.append(tuple(current_merged))
+            else:
+                results.append(tuple(current_merged))
 
-            results.append(tuple(current_merged))
             current_merged = list(next_sample)
             merge_history = [next_sample]
 
@@ -119,6 +113,12 @@ for video_id, samples in tqdm(samples_by_video_id.items()):
     if len(merge_history) > 1:
         print_debug_info(video_id, current_merged, merge_history)
 
-    results.append(tuple(current_merged))
+        vlm_decision = should_merge_segments(merge_history)
 
-print(f"\nProcess finished. Total merged: {total_merged_count}")
+        if vlm_decision == "No":
+            results.extend([tuple(s) for s in merge_history])
+        else:
+            # "Yes" or "Unsure" - keep merged segment
+            results.append(tuple(current_merged))
+    else:
+        results.append(tuple(current_merged))
