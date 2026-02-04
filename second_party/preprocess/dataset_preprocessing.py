@@ -1,5 +1,6 @@
 import os
 import math
+import json
 import pickle as pkl
 from tqdm import tqdm
 from collections import defaultdict
@@ -23,17 +24,17 @@ DEFAULT_MODEL_PATH = "Qwen/Qwen3-VL-8B-Instruct"
 ORIGINAL_DATA_PATH = "/ptmp/dduka/databases/ego4d/ego4d_train_with_uuid.pkl"
 VIDEO_ROOT = "/ptmp/dduka/databases/ego4d/video_320px_15sec/"
 CHUNK_LEN_SEC = 15.0
-FPS = 2
+FPS = 16
 MAX_PIXELS = 360 * 420
-MINI_BATCH_SIZE = 2
-MAX_VIDEO_CHUNKS = 4
+MINI_BATCH_SIZE = 1
+MAX_VIDEO_CHUNKS = 10
 MAX_MODEL_LEN = 120000
 
 PROMPT_TEMPLATE = """You are an expert in video annotation quality control. Your task is to evaluate a sequence of consecutive caption segments from a video and determine whether they should be merged into a single caption.
 
 **Input**:  
 - A list of N caption segments, each with:
-  - Start and end timestamps (in seconds)
+  - Start and end timestamps (in seconds relative to the start of the video)
   - A short descriptive caption
   - The corresponding video footage covering the entire span of these segments
 
@@ -83,7 +84,7 @@ def get_video_chunks_for_segments(video_id, start_time, end_time):
         if os.path.exists(chunk_path):
             chunks.append(chunk_path)
         curr += CHUNK_LEN_SEC
-    return chunks
+    return chunks, first_chunk
 
 
 def remove_exact_duplicates(samples_by_video_id):
@@ -136,7 +137,7 @@ def generate_merge_candidates(samples_by_video_id):
                 current_merged[3] = max(current_merged[3], next_sample[3])
                 history.append(next_sample)
             else:
-                if len(history) > 1:
+                if len(history) > 6:
                     merge_candidates.append(
                         {
                             "video_id": video_id,
@@ -150,7 +151,7 @@ def generate_merge_candidates(samples_by_video_id):
                 current_merged, history = list(next_sample), [next_sample]
 
         # Handle the final group
-        if len(history) > 1:
+        if len(history) > 6:
             merge_candidates.append(
                 {
                     "video_id": video_id,
@@ -181,21 +182,22 @@ def prepare_prompt(candidates, tokenizer):
     """
     batch_inputs = []
     for candidate in candidates:
+        chunk_paths, first_chunk = get_video_chunks_for_segments(
+            candidate["video_id"],
+            candidate["merged_row"][2],
+            candidate["merged_row"][3],
+        )
+
         segments_as_str = []
         for idx, history_item in enumerate(candidate["history"]):
             segments_as_str.append(
-                f'- {idx + 1}. [{history_item[2]:.2f}s - {history_item[3]:.2f}s]: "{history_item[4]}"'
+                f'- {idx + 1}. [{(history_item[2] - first_chunk):.2f}s - {(history_item[3] - first_chunk):.2f}s]: "{history_item[4]}"'
             )
 
         segments_formatted = "\n".join(segments_as_str)
         prompt_filled = PROMPT_TEMPLATE.format(segments=segments_formatted)
 
-        # Resolve the video paths
-        chunk_paths = get_video_chunks_for_segments(
-            candidate["video_id"],
-            candidate["merged_row"][2],
-            candidate["merged_row"][3],
-        )
+        print(prompt_filled)
 
         # Build messages in Qwen VL chat format
         messages = [
@@ -274,6 +276,7 @@ if __name__ == "__main__":
 
     dataset, merge_candidates = generate_merge_candidates(samples_by_video_id)
 
+    json_responses = []
     for candidates in tqdm(chunk_list(merge_candidates, MINI_BATCH_SIZE)):
         batch_inputs = prepare_prompt(candidates, tokenizer)
 
@@ -281,10 +284,21 @@ if __name__ == "__main__":
 
         for candidate, output in zip(candidates, outputs):
             response_text = output.outputs[0].text.strip()
-            candidate["model_response"] = response_text
+            try:
+                json_response = json.loads(response_text)
+                json_responses.append(json_response)
 
-            # Print result for verification
-            print(f"\n--- Result for {candidate['video_id']} ---")
-            print(f"Response: {response_text}")
+                print(candidate)
+                print(json_response)
 
-        break
+                do_merge = json_response["merge"]
+                confidence = json_response["confidence"]
+
+                if do_merge and confidence >= 0.9:
+                    dataset.append(candidate["merged_row"])
+                elif do_merge and confidence < 0.9:
+                    print("Model not confident!")
+                else:
+                    dataset.extend(candidate["history"])
+            except Exception as e:
+                print("Failed to parse!", e)
