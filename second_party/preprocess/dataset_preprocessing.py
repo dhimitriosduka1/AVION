@@ -5,17 +5,29 @@ from tqdm import tqdm
 from collections import defaultdict
 
 from vllm import LLM, SamplingParams
+from qwen_vl_utils import process_vision_info
+
+# --- HELPERS ---
+# {
+#     "role": "user",
+#     "content": [
+#         {"type": "text", "text": "Here are two videos from a security feed."},
+#         {"type": "video", "video": video_1_path},
+#         {"type": "video", "video": video_2_path},
+#         {"type": "text", "text": "Compare the activity levels between the first and second video."}
+#     ]
+# }
 
 # --- CONFIGURATION ---
 DEFAULT_MODEL_PATH = "Qwen/Qwen3-VL-8B-Instruct"
 ORIGINAL_DATA_PATH = "/ptmp/dduka/databases/ego4d/ego4d_train_with_uuid.pkl"
 VIDEO_ROOT = "/ptmp/dduka/databases/ego4d/video_320px_15sec/"
 CHUNK_LEN_SEC = 15.0
-FPS = 8
+FPS = 2
 MAX_PIXELS = 360 * 420
 MINI_BATCH_SIZE = 2
 MAX_VIDEO_CHUNKS = 4
-MAX_MODEL_LEN = 128000
+MAX_MODEL_LEN = 120000
 
 PROMPT_TEMPLATE = """You are an expert in video annotation quality control. Your task is to evaluate a sequence of consecutive caption segments from a video and determine whether they should be merged into a single caption.
 
@@ -162,8 +174,12 @@ def generate_merge_candidates(samples_by_video_id):
     return dataset, merge_candidates
 
 
-def prepare_prompt(candidates):
-    batch_conversations = []
+def prepare_prompt(candidates, tokenizer):
+    """
+    Prepare prompts for vLLM generate() API with multi-modal data.
+    Uses process_vision_info to handle video processing.
+    """
+    batch_inputs = []
     for candidate in candidates:
         segments_as_str = []
         for idx, history_item in enumerate(candidate["history"]):
@@ -174,24 +190,43 @@ def prepare_prompt(candidates):
         segments_formatted = "\n".join(segments_as_str)
         prompt_filled = PROMPT_TEMPLATE.format(segments=segments_formatted)
 
-        # Resolve the video path
+        # Resolve the video paths
         chunk_paths = get_video_chunks_for_segments(
             candidate["video_id"],
             candidate["merged_row"][2],
             candidate["merged_row"][3],
         )
 
-        user_message = {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt_filled},
-                *[{"type": "video", "video": path} for path in chunk_paths],
-            ],
-        }
+        # Build messages in Qwen VL chat format
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    *[
+                        {"type": "video", "video": path, "fps": FPS}
+                        for path in chunk_paths
+                    ],
+                    {"type": "text", "text": prompt_filled},
+                ],
+            }
+        ]
 
-        batch_conversations.append([user_message])
+        # Apply chat template to get the prompt text
+        prompt = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
 
-    return batch_conversations
+        # Use process_vision_info to extract and process video data
+        _, video_inputs = process_vision_info(messages, return_video_metadata=True)
+
+        batch_inputs.append(
+            {
+                "prompt": prompt,
+                "multi_modal_data": {"video": video_inputs},
+            }
+        )
+
+    return batch_inputs
 
 
 def load_model():
@@ -207,10 +242,8 @@ def load_model():
     tokenizer = llm.get_tokenizer()
 
     sampling_params = SamplingParams(
-        temperature=0.1,
-        top_p=0.95,
+        temperature=0.0,
         max_tokens=256,
-        repetition_penalty=1.05,
     )
     return llm, tokenizer, sampling_params
 
@@ -242,9 +275,9 @@ if __name__ == "__main__":
     dataset, merge_candidates = generate_merge_candidates(samples_by_video_id)
 
     for candidates in tqdm(chunk_list(merge_candidates, MINI_BATCH_SIZE)):
-        conversations = prepare_prompt(candidates)
+        batch_inputs = prepare_prompt(candidates, tokenizer)
 
-        outputs = llm.chat(conversations, sampling_params=sampling_params)
+        outputs = llm.generate(batch_inputs, sampling_params=sampling_params)
 
         for candidate, output in zip(candidates, outputs):
             response_text = output.outputs[0].text.strip()
