@@ -19,8 +19,16 @@ from qwen_vl_utils import process_vision_info
 #     ]
 # }
 
+# export greedy='false'
+# export top_p=0.95
+# export top_k=20
+# export repetition_penalty=1.0
+# export presence_penalty=0.0
+# export temperature=1.0
+# export out_seq_length=40960
+
 # --- CONFIGURATION ---
-DEFAULT_MODEL_PATH = "Qwen/Qwen3-VL-8B-Instruct"
+DEFAULT_MODEL_PATH = "Qwen/Qwen3-VL-8B-Thinking"
 ORIGINAL_DATA_PATH = "/ptmp/dduka/databases/ego4d/ego4d_train_with_uuid.pkl"
 VIDEO_ROOT = "/ptmp/dduka/databases/ego4d/video_320px_15sec/"
 CHUNK_LEN_SEC = 15.0
@@ -237,15 +245,18 @@ def load_model():
         tensor_parallel_size=1,
         limit_mm_per_prompt={"video": MAX_VIDEO_CHUNKS},
         max_model_len=MAX_MODEL_LEN,
-        enforce_eager=True,  # Often helpful for multimodal models to avoid graph capture issues
+        enforce_eager=True,
     )
 
-    # Not strictly needed for generation, but good for inspection
     tokenizer = llm.get_tokenizer()
 
     sampling_params = SamplingParams(
-        temperature=0.0,
-        max_tokens=256,
+        temperature=1.0,
+        max_tokens=1024,
+        top_p=0.95,
+        top_k=20,
+        repetition_penalty=1.0,
+        presence_penalty=0.0,
     )
     return llm, tokenizer, sampling_params
 
@@ -265,7 +276,6 @@ if __name__ == "__main__":
             print(f"Loaded {len(dataset)} samples.")
     else:
         print(f"Path not found: {ORIGINAL_DATA_PATH}")
-        # Dummy data for testing flow if file missing
         dataset = []
 
     samples_by_video_id = defaultdict(list)
@@ -284,21 +294,26 @@ if __name__ == "__main__":
 
         for candidate, output in zip(candidates, outputs):
             response_text = output.outputs[0].text.strip()
-            try:
-                json_response = json.loads(response_text)
-                json_responses.append(json_response)
 
-                print(candidate)
-                print(json_response)
+            print("=== Response ===")
+            print(response_text)
+            print("================")
 
-                do_merge = json_response["merge"]
-                confidence = json_response["confidence"]
+            # try:
+            #     json_response = json.loads(response_text)
+            #     json_responses.append(json_response)
 
-                if do_merge and confidence >= 0.9:
-                    dataset.append(candidate["merged_row"])
-                elif do_merge and confidence < 0.9:
-                    print("Model not confident!")
-                else:
-                    dataset.extend(candidate["history"])
-            except Exception as e:
-                print("Failed to parse!", e)
+            #     print(candidate)
+            #     print(json_response)
+
+            #     do_merge = json_response["merge"]
+            #     confidence = json_response["confidence"]
+
+            #     if do_merge and confidence >= 0.9:
+            #         dataset.append(candidate["merged_row"])
+            #     elif do_merge and confidence < 0.9:
+            #         print("Model not confident!")
+            #     else:
+            #         dataset.extend(candidate["history"])
+            # except Exception as e:
+            #     print("Failed to parse!", e)
