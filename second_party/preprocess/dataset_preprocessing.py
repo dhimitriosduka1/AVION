@@ -34,9 +34,9 @@ ORIGINAL_DATA_PATH = "/ptmp/dduka/databases/ego4d/ego4d_train_with_uuid.pkl"
 OUTPUT_DATA_PATH = "/ptmp/dduka/databases/ego4d/ego4d_train_deduplicated_with_uuid.pkl"
 VIDEO_ROOT = "/ptmp/dduka/databases/ego4d/video_320px_15sec/"
 CHUNK_LEN_SEC = 15.0
-FPS = 16
+FPS = 8
 MAX_PIXELS = 360 * 420
-MINI_BATCH_SIZE = 1
+MINI_BATCH_SIZE = 128
 MAX_VIDEO_CHUNKS = 10
 MAX_MODEL_LEN = 120000
 THINK_KEYWORD = "</think>"
@@ -121,7 +121,7 @@ def remove_exact_duplicates(samples_by_video_id):
         len(samples) for samples in samples_by_video_id.values()
     )
     print(f"Removed {total_before - total_samples_after_dedup} duplicate samples.")
-    return samples_by_video_id
+    return samples_by_video_id, total_samples_after_dedup
 
 
 def generate_merge_candidates(samples_by_video_id):
@@ -149,7 +149,7 @@ def generate_merge_candidates(samples_by_video_id):
                 current_merged[3] = max(current_merged[3], next_sample[3])
                 history.append(next_sample)
             else:
-                if len(history) > 1:
+                if len(history) > 2:
                     merge_candidates.append(
                         {
                             "video_id": video_id,
@@ -163,7 +163,7 @@ def generate_merge_candidates(samples_by_video_id):
                 current_merged, history = list(next_sample), [next_sample]
 
         # Handle the final group
-        if len(history) > 1:
+        if len(history) > 2:
             merge_candidates.append(
                 {
                     "video_id": video_id,
@@ -208,8 +208,6 @@ def prepare_prompt(candidates, tokenizer):
 
         segments_formatted = "\n".join(segments_as_str)
         prompt_filled = PROMPT_TEMPLATE.format(segments=segments_formatted)
-
-        print(prompt_filled)
 
         # Build messages in Qwen VL chat format
         messages = [
@@ -288,11 +286,11 @@ if __name__ == "__main__":
     for sample in dataset:
         samples_by_video_id[sample[1]].append(sample)
 
-    samples_by_video_id = remove_exact_duplicates(samples_by_video_id)
+    samples_by_video_id, dedup_size = remove_exact_duplicates(samples_by_video_id)
 
     dataset, merge_candidates = generate_merge_candidates(samples_by_video_id)
 
-    json_responses = []
+    merged_count = 0
     for candidates in tqdm(chunk_list(merge_candidates, MINI_BATCH_SIZE)):
         batch_inputs = prepare_prompt(candidates, tokenizer)
 
@@ -308,25 +306,37 @@ if __name__ == "__main__":
                 response_text = response_text[think_end_idx:].strip()
 
                 json_response = json.loads(response_text)
-                json_responses.append(json_response)
-
-                print(json_response)
 
                 do_merge = json_response["merge"]
                 confidence = json_response["confidence"]
 
                 if do_merge and confidence >= 0.9:
+                    print(f"[INFO] Segments must be merged!")
                     dataset.append(candidate["merged_row"])
+                    merged_count += (
+                        len(candidate["history"]) - 1
+                    )  # -1 since I need to account for the fact that I'm keeping one from all of them
                 elif do_merge and confidence < 0.9:
                     print(
-                        f"[WARNING] The model was not confident in its answer! Keeping the original captions!"
+                        f"[Info] The model was not confident in its answer! Keeping the original captions!"
                     )
                     dataset.extend(candidate["history"])
+                    print(
+                        f"[INFO] Model not confident enough! Keeping the old captions!"
+                    )
+                    print(f"[INFO] Candidates: {candidate}")
                 else:
+                    print(
+                        f"[INFO] Segments must not be merged! Keeping the old captions!"
+                    )
+                    print(f"[INFO] Candidates: {candidate}")
                     dataset.extend(candidate["history"])
 
             except (json.JSONDecodeError, Exception) as e:
-                print(f"Failed to parse output for {candidate['video_id']}: {e}")
+                print(
+                    f"[ERROR] Failed to parse output for {candidate['video_id']}: {e}"
+                )
+                print(f"[INFO] Candidates: {candidate}")
                 dataset.extend(candidate["history"])
 
 
@@ -334,4 +344,7 @@ if __name__ == "__main__":
 with open(OUTPUT_DATA_PATH, "wb") as f:
     pkl.dump(dataset, f)
 
+print(f"Original deduplicated dataset size: {dedup_size}")
+print(f"Number of samples merged: {merged_count}")
+print(f"Expected number of samples to be saved: {dedup_size - merged_count}")
 print(f"Saved {len(dataset)} samples in {OUTPUT_DATA_PATH}")
