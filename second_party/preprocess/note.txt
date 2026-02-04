@@ -1,0 +1,65 @@
+When performing the manual annotation of the dataset, I noticed that there are a lot of captions which are duplicated, which doesn't make sense. Therefore, I want to perform the following:
+    1. Remove all the exact duplicates from the dataset.
+    2. First, merge all the captions which overlap and have the exact same caption. (Here, we might need to use some external model to actually tell us if it's okay to merge or not since there can exist cases when the action is just repeated multiple times, example below).
+        [DEBUG] Merge Event in Video: bfe64619-9bd6-43be-bae3-97f4c3dfd4ca
+        Part  1 | 1027.76s - 1029.41s | Caption: '#C C controls the touchpad to activate items on the screen'
+        Part  2 | 1028.75s - 1030.39s | Caption: '#C C controls the touchpad to activate items on the screen'
+        Part  3 | 1029.90s - 1031.55s | Caption: '#C C controls the touchpad to activate items on the screen'
+        Part  4 | 1031.20s - 1032.85s | Caption: '#C C controls the touchpad to activate items on the screen'
+        Part  5 | 1032.06s - 1033.71s | Caption: '#C C controls the touchpad to activate items on the screen'
+        Part  6 | 1033.05s - 1034.70s | Caption: '#C C controls the touchpad to activate items on the screen'
+        Part  7 | 1034.05s - 1035.70s | Caption: '#C C controls the touchpad to activate items on the screen'
+        Part  8 | 1035.12s - 1036.77s | Caption: '#C C controls the touchpad to activate items on the screen'
+        Part  9 | 1036.33s - 1037.98s | Caption: '#C C controls the touchpad to activate items on the screen'
+        Part 10 | 1037.39s - 1039.04s | Caption: '#C C controls the touchpad to activate items on the screen'
+        Part 11 | 1038.16s - 1039.81s | Caption: '#C C controls the touchpad to activate items on the screen'
+        Part 12 | 1039.32s - 1040.97s | Caption: '#C C controls the touchpad to activate items on the screen'
+        Part 13 | 1039.88s - 1041.53s | Caption: '#C C controls the touchpad to activate items on the screen'
+        Part 14 | 1040.45s - 1042.10s | Caption: '#C C controls the touchpad to activate items on the screen'
+        Part 15 | 1041.15s - 1042.80s | Caption: '#C C controls the touchpad to activate items on the screen'
+        Part 16 | 1042.00s - 1043.65s | Caption: '#C C controls the touchpad to activate items on the screen'
+        Part 17 | 1042.54s - 1044.19s | Caption: '#C C controls the touchpad to activate items on the screen'
+        =============== RESULT ===============
+        FINAL   | 1027.76s - 1044.19s | Caption: '#C C controls the touchpad to activate items on the screen'
+        ------------------------------------------------------------ 
+
+        In case there are only two overlapping captions, we consider them by default as MERGE. However, in case more that 2 segments are present, we prompt QWEN3VL Thinking to reason about them and decide if they should be 
+        merged or not. The prompt used for this is the following:
+
+        PROMPT_TEMPLATE = """You are an expert in video annotation quality control. Your task is to evaluate a sequence of consecutive caption segments from a video and determine whether they should be merged into a single caption.
+
+        **Input**:  
+        - A list of N caption segments, each with:
+        - Start and end timestamps (in seconds relative to the start of the video)
+        - A short descriptive caption
+        - The corresponding video footage covering the entire span of these segments
+
+        **Decision Criteria**:  
+        MERGE the segments if **ALL** of the following are true:  
+        1. The described activity is **continuous and homogeneous** (e.g., walking, scrolling, watching, stirring, holding an object).  
+        2. There are **no discrete, countable sub-events** (e.g., no individual clicks, throws, spoken words, card drops, tool switches).  
+        3. The segmentation appears to result from **technical over-splitting** (e.g., fixed-duration windows, sliding windows) rather than human-annotated event boundaries.  
+        4. Merging would **not lose semantically important information** (e.g., quantity, sequence order, or distinct phases).
+
+        DO NOT MERGE if **ANY** of the following apply:  
+        - The captions imply **repetition of distinct instances** (e.g., “again”, “another”, “next”, “#1”, “then”).  
+        - The action involves **separable physical or logical units** (e.g., steps in a recipe, plays in sports, UI interactions).  
+        - Temporal gaps or overlaps suggest **intentional segmentation** of micro-events.  
+        - The total duration spans a **meaningful change in context** (e.g., subject, object, goal), even if wording is similar.
+
+        **Output Format**:  
+        Respond ONLY with valid JSON in this exact structure:
+        {{
+            "merge": true|false,
+            "reason": "Concise justification focusing on continuity vs. discreteness of actions.",
+            "confidence": 0.0-1.0
+        }}
+
+        Do not include any other text, explanations, or formatting.
+
+        **Caption Segments**:
+        {segments}
+        """
+
+        After performing this step, the dataset has a size of 3995182, which means that 17055 captions where removed. The dataset was saved in a file called ego4d_train_deduplicated_with_uuid.pkl
+

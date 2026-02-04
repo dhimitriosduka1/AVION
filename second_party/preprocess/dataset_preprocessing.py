@@ -129,6 +129,7 @@ def generate_merge_candidates(samples_by_video_id):
 
     dataset = []
     merge_candidates = []
+    auto_merged_count = 0
     for video_id, samples in tqdm(samples_by_video_id.items()):
         samples.sort(key=lambda x: x[2])
 
@@ -158,6 +159,9 @@ def generate_merge_candidates(samples_by_video_id):
                         }
                     )
                 else:
+                    if len(history) == 2:
+                        auto_merged_count += 1
+
                     dataset.append(tuple(current_merged))
 
                 current_merged, history = list(next_sample), [next_sample]
@@ -172,6 +176,9 @@ def generate_merge_candidates(samples_by_video_id):
                 }
             )
         else:
+            if len(history) == 2:
+                auto_merged_count += 1
+
             dataset.append(tuple(current_merged))
 
     if merge_candidates:
@@ -184,7 +191,8 @@ def generate_merge_candidates(samples_by_video_id):
     else:
         print("No merge candidates found.")
 
-    return dataset, merge_candidates
+    print(f"Auto-merged {auto_merged_count} pairs (2 segments with same caption).")
+    return dataset, merge_candidates, auto_merged_count
 
 
 def prepare_prompt(candidates, tokenizer):
@@ -288,7 +296,9 @@ if __name__ == "__main__":
 
     samples_by_video_id, dedup_size = remove_exact_duplicates(samples_by_video_id)
 
-    dataset, merge_candidates = generate_merge_candidates(samples_by_video_id)
+    dataset, merge_candidates, auto_merged_count = generate_merge_candidates(
+        samples_by_video_id
+    )
 
     merged_count = 0
     for candidates in tqdm(chunk_list(merge_candidates, MINI_BATCH_SIZE)):
@@ -344,7 +354,12 @@ if __name__ == "__main__":
 with open(OUTPUT_DATA_PATH, "wb") as f:
     pkl.dump(dataset, f)
 
+total_merged = merged_count + auto_merged_count
+
 print(f"Original deduplicated dataset size: {dedup_size}")
-print(f"Number of samples merged: {merged_count}")
-print(f"Expected number of samples to be saved: {dedup_size - merged_count}")
+print(f"Number of samples merged by LLM: {merged_count}")
+print(f"Number of sample auto-merged: {auto_merged_count}")
+print(f"Total samples merged: {total_merged}")
+
+print(f"Expected number of samples to be saved: {dedup_size - total_merged}")
 print(f"Saved {len(dataset)} samples in {OUTPUT_DATA_PATH}")
