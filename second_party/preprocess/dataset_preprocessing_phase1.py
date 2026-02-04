@@ -124,6 +124,13 @@ def remove_exact_duplicates(samples_by_video_id):
     return samples_by_video_id, total_samples_after_dedup
 
 
+def are_the_same(current_sample, next_sample):
+    curr_cap = str(current_sample[4]).lower().strip()
+    next_cap = str(next_sample[4]).lower().strip()
+
+    return next_sample[2] <= current_sample[3] and curr_cap == next_cap
+
+
 def generate_merge_candidates(samples_by_video_id):
     print("Generating merge candidates...")
 
@@ -142,11 +149,8 @@ def generate_merge_candidates(samples_by_video_id):
         for i in range(1, len(samples)):
             next_sample = samples[i]
 
-            curr_cap = str(current_merged[4]).lower().strip()
-            next_cap = str(next_sample[4]).lower().strip()
-
             # Logic to group consecutive segments with identical captions
-            if next_sample[2] <= current_merged[3] and curr_cap == next_cap:
+            if are_the_same(current_merged, next_sample):
                 current_merged[3] = max(current_merged[3], next_sample[3])
                 history.append(next_sample)
             else:
