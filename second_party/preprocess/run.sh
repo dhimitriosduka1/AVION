@@ -16,4 +16,4 @@
 cd /u/dduka/work/projects/Thesis/AVION/
 
 # 4. Run the Python Script
-uv run /u/dduka/work/projects/Thesis/AVION/second_party/preprocess/dataset_preprocessing.py
+uv run /u/dduka/work/projects/Thesis/AVION/second_party/preprocess/dataset_preprocessing_phase1.py

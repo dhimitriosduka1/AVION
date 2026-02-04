@@ -3,7 +3,7 @@
 #SBATCH -o /ptmp/dduka/work/logs/avion/scaled_%A_%a_%x_%j_%N.out
 #SBATCH -e /ptmp/dduka/work/logs/avion/scaled_%A_%a_%x_%j_%N.err
 
-#SBATCH --job-name mean_scaled_vllm
+#SBATCH --job-name std_padding
 
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -12,15 +12,14 @@
 #SBATCH --constraint="gpu"
 #SBATCH --cpus-per-task=72
 
-#SBATCH --time=23:59:59
-
-#SBATCH --array=0-40%10
+#SBATCH --time=15:59:59
+#SBATCH --array=0-8
 
 cd /u/dduka/work/projects/Thesis/AVION/
 
 # 1. Configuration
-CHUNK_SIZE=100000
-TOTAL_ITEMS=4012544
+CHUNK_SIZE=50000
+TOTAL_ITEMS=362409
 
 # 2. Calculate Start and End Indices
 START_IDX=$(( $SLURM_ARRAY_TASK_ID * $CHUNK_SIZE ))
@@ -40,12 +39,12 @@ echo "Batch Size:   $CHUNK_SIZE"
 echo "================================================="
 
 # 4. Run the Python Script
-uv run ./second_party/qwen3vl/vllm_refine_multiple_captions.py \
+uv run ./second_party/qwen3vl/vllm_refine.py \
     --start_idx $START_IDX \
     --end_idx $END_IDX \
     --batch_size 512 \
     --tensor_parallel_size 4 \
-    --output_file /ptmp/dduka/databases/ego4d/qwen_refinement/scaled/output_10_caption.jsonl \
-    --pkl_path /ptmp/dduka/databases/ego4d/ego4d_train_random_shift_2.1_2.1_1.0_with_uuid.pkl \
-    --video_root /ptmp/dduka/databases/ego4d/video_320px_15sec \
-
+    --output_file /ptmp/dduka/databases/ego4d/qwen_refinement/standard/output_1_caption_1_padding_362k_subset.jsonl \
+    --pkl_path /ptmp/dduka/databases/ego4d/ego4d_train_362k_subset_with_uuid.pkl \
+    --video_root /ptmp/dduka/databases/ego4d/video_320px_15sec/ \
+    --video_padding 1 \
