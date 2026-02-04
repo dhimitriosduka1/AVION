@@ -6,19 +6,6 @@ from collections import defaultdict
 
 from vllm import LLM, SamplingParams
 
-# from qwen_vl_utils import process_vision_info
-
-# --- HELPERS ---
-# {
-#     "role": "user",
-#     "content": [
-#         {"type": "text", "text": "Here are two videos from a security feed."},
-#         {"type": "video", "video": video_1_path},
-#         {"type": "video", "video": video_2_path},
-#         {"type": "text", "text": "Compare the activity levels between the first and second video."}
-#     ]
-# }
-
 # --- CONFIGURATION ---
 DEFAULT_MODEL_PATH = "Qwen/Qwen3-VL-8B-Instruct"
 ORIGINAL_DATA_PATH = "/ptmp/dduka/databases/ego4d/ego4d_train_with_uuid.pkl"
@@ -28,9 +15,9 @@ FPS = 8
 MAX_PIXELS = 360 * 420
 MINI_BATCH_SIZE = 2
 MAX_VIDEO_CHUNKS = 4
-MAX_MODEL_LEN = 120000
+MAX_MODEL_LEN = 128000
 
-PROMPT = """You are an expert in video annotation quality control. Your task is to evaluate a sequence of consecutive caption segments from a video and determine whether they should be merged into a single caption.
+PROMPT_TEMPLATE = """You are an expert in video annotation quality control. Your task is to evaluate a sequence of consecutive caption segments from a video and determine whether they should be merged into a single caption.
 
 **Input**:  
 - A list of N caption segments, each with:
@@ -89,11 +76,14 @@ def get_video_chunks_for_segments(video_id, start_time, end_time):
 
 def remove_exact_duplicates(samples_by_video_id):
     print(f"Removing exact duplicates...")
+    total_before = sum(len(s) for s in samples_by_video_id.values())
+
     for video_id, samples in samples_by_video_id.items():
         seen = set()
         unique_samples = []
 
         for row in samples:
+            # Identifier based on start, end, and caption
             identifier = (row[1], row[2], row[3], row[4])
 
             if identifier not in seen:
@@ -105,7 +95,7 @@ def remove_exact_duplicates(samples_by_video_id):
     total_samples_after_dedup = sum(
         len(samples) for samples in samples_by_video_id.values()
     )
-    print(f"Removed {len(dataset) - total_samples_after_dedup} duplicate samples.")
+    print(f"Removed {total_before - total_samples_after_dedup} duplicate samples.")
     return samples_by_video_id
 
 
@@ -129,6 +119,7 @@ def generate_merge_candidates(samples_by_video_id):
             curr_cap = str(current_merged[4]).lower().strip()
             next_cap = str(next_sample[4]).lower().strip()
 
+            # Logic to group consecutive segments with identical captions
             if next_sample[2] <= current_merged[3] and curr_cap == next_cap:
                 current_merged[3] = max(current_merged[3], next_sample[3])
                 history.append(next_sample)
@@ -146,6 +137,7 @@ def generate_merge_candidates(samples_by_video_id):
 
                 current_merged, history = list(next_sample), [next_sample]
 
+        # Handle the final group
         if len(history) > 1:
             merge_candidates.append(
                 {
@@ -157,24 +149,21 @@ def generate_merge_candidates(samples_by_video_id):
         else:
             dataset.append(tuple(current_merged))
 
-    print(
-        f"Found {len(merge_candidates)} potential merges. {sum(len(s['history']) for s in merge_candidates)} samples involved."
-    )
-    print(
-        f"Shortest merge candidate has {min(len(s['history']) for s in merge_candidates)} samples."
-    )
-    print(
-        f"Longest merge candidate has {max(len(s['history']) for s in merge_candidates)} samples."
-    )
-    print(
-        f"Average merge candidate has {sum(len(s['history']) for s in merge_candidates) / len(merge_candidates):.2f} samples."
-    )
+    if merge_candidates:
+        print(
+            f"Found {len(merge_candidates)} potential merges. {sum(len(s['history']) for s in merge_candidates)} samples involved."
+        )
+        print(
+            f"Average merge candidate has {sum(len(s['history']) for s in merge_candidates) / len(merge_candidates):.2f} samples."
+        )
+    else:
+        print("No merge candidates found.")
 
     return dataset, merge_candidates
 
 
 def prepare_prompt(candidates):
-    prompts = []
+    batch_conversations = []
     for candidate in candidates:
         segments_as_str = []
         for idx, history_item in enumerate(candidate["history"]):
@@ -183,7 +172,7 @@ def prepare_prompt(candidates):
             )
 
         segments_formatted = "\n".join(segments_as_str)
-        prompt_filled = PROMPT.format(segments=segments_formatted)
+        prompt_filled = PROMPT_TEMPLATE.format(segments=segments_formatted)
 
         # Resolve the video path
         chunk_paths = get_video_chunks_for_segments(
@@ -192,7 +181,7 @@ def prepare_prompt(candidates):
             candidate["merged_row"][3],
         )
 
-        final_prompt = {
+        user_message = {
             "role": "user",
             "content": [
                 {"type": "text", "text": prompt_filled},
@@ -200,9 +189,9 @@ def prepare_prompt(candidates):
             ],
         }
 
-        prompts.append(final_prompt)
+        batch_conversations.append([user_message])
 
-    return prompts
+    return batch_conversations
 
 
 def load_model():
@@ -211,7 +200,10 @@ def load_model():
         tensor_parallel_size=1,
         limit_mm_per_prompt={"video": MAX_VIDEO_CHUNKS},
         max_model_len=MAX_MODEL_LEN,
+        enforce_eager=True,  # Often helpful for multimodal models to avoid graph capture issues
     )
+
+    # Not strictly needed for generation, but good for inspection
     tokenizer = llm.get_tokenizer()
 
     sampling_params = SamplingParams(
@@ -232,9 +224,14 @@ def chunk_list(lst, n):
 if __name__ == "__main__":
     llm, tokenizer, sampling_params = load_model()
 
-    with open(ORIGINAL_DATA_PATH, "rb") as f:
-        dataset = pkl.load(f)
-        print(f"Loaded {len(dataset)} samples.")
+    if os.path.exists(ORIGINAL_DATA_PATH):
+        with open(ORIGINAL_DATA_PATH, "rb") as f:
+            dataset = pkl.load(f)
+            print(f"Loaded {len(dataset)} samples.")
+    else:
+        print(f"Path not found: {ORIGINAL_DATA_PATH}")
+        # Dummy data for testing flow if file missing
+        dataset = []
 
     samples_by_video_id = defaultdict(list)
     for sample in dataset:
@@ -242,27 +239,19 @@ if __name__ == "__main__":
 
     samples_by_video_id = remove_exact_duplicates(samples_by_video_id)
 
-    # Dataset does not contain the possible merge candidates. They are stored
-    # in merge_candidates for further processing.
     dataset, merge_candidates = generate_merge_candidates(samples_by_video_id)
 
     for candidates in tqdm(chunk_list(merge_candidates, MINI_BATCH_SIZE)):
-        prompts = prepare_prompt(candidates)
+        conversations = prepare_prompt(candidates)
 
-        prompts = tokenizer.apply_chat_template(
-            prompts,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-
-        print(prompts)
-
-        outputs = llm.chat(prompts, sampling_params=sampling_params)
+        outputs = llm.chat(conversations, sampling_params=sampling_params)
 
         for candidate, output in zip(candidates, outputs):
-            response_text = output.generations[0].text.strip()
+            response_text = output.outputs[0].text.strip()
             candidate["model_response"] = response_text
 
-        print(f"Candidates processed: {candidates}")
+            # Print result for verification
+            print(f"\n--- Result for {candidate['video_id']} ---")
+            print(f"Response: {response_text}")
 
         break
