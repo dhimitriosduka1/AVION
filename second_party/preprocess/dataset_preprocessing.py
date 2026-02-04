@@ -1,6 +1,7 @@
 import os
 import math
 import json
+import torch
 import pickle as pkl
 from tqdm import tqdm
 from collections import defaultdict
@@ -30,6 +31,7 @@ from qwen_vl_utils import process_vision_info
 # --- CONFIGURATION ---
 DEFAULT_MODEL_PATH = "Qwen/Qwen3-VL-8B-Thinking"
 ORIGINAL_DATA_PATH = "/ptmp/dduka/databases/ego4d/ego4d_train_with_uuid.pkl"
+OUTPUT_DATA_PATH = "/ptmp/dduka/databases/ego4d/ego4d_train_deduplicated_with_uuid.pkl"
 VIDEO_ROOT = "/ptmp/dduka/databases/ego4d/video_320px_15sec/"
 CHUNK_LEN_SEC = 15.0
 FPS = 16
@@ -37,6 +39,8 @@ MAX_PIXELS = 360 * 420
 MINI_BATCH_SIZE = 1
 MAX_VIDEO_CHUNKS = 10
 MAX_MODEL_LEN = 120000
+THINK_KEYWORD = "</think>"
+GPU_COUNT = torch.cuda.device_count()
 
 PROMPT_TEMPLATE = """You are an expert in video annotation quality control. Your task is to evaluate a sequence of consecutive caption segments from a video and determine whether they should be merged into a single caption.
 
@@ -145,7 +149,7 @@ def generate_merge_candidates(samples_by_video_id):
                 current_merged[3] = max(current_merged[3], next_sample[3])
                 history.append(next_sample)
             else:
-                if len(history) > 6:
+                if len(history) > 1:
                     merge_candidates.append(
                         {
                             "video_id": video_id,
@@ -159,7 +163,7 @@ def generate_merge_candidates(samples_by_video_id):
                 current_merged, history = list(next_sample), [next_sample]
 
         # Handle the final group
-        if len(history) > 6:
+        if len(history) > 1:
             merge_candidates.append(
                 {
                     "video_id": video_id,
@@ -242,7 +246,7 @@ def prepare_prompt(candidates, tokenizer):
 def load_model():
     llm = LLM(
         model=DEFAULT_MODEL_PATH,
-        tensor_parallel_size=1,
+        tensor_parallel_size=GPU_COUNT,
         limit_mm_per_prompt={"video": MAX_VIDEO_CHUNKS},
         max_model_len=MAX_MODEL_LEN,
         enforce_eager=True,
@@ -251,8 +255,8 @@ def load_model():
     tokenizer = llm.get_tokenizer()
 
     sampling_params = SamplingParams(
-        temperature=1.0,
-        max_tokens=1024,
+        temperature=0.7,
+        max_tokens=4096,
         top_p=0.95,
         top_k=20,
         repetition_penalty=1.0,
@@ -268,6 +272,8 @@ def chunk_list(lst, n):
 
 
 if __name__ == "__main__":
+    print(f"Using {GPU_COUNT} GPUs")
+
     llm, tokenizer, sampling_params = load_model()
 
     if os.path.exists(ORIGINAL_DATA_PATH):
@@ -295,25 +301,37 @@ if __name__ == "__main__":
         for candidate, output in zip(candidates, outputs):
             response_text = output.outputs[0].text.strip()
 
-            print("=== Response ===")
-            print(response_text)
-            print("================")
+            try:
+                think_end_idx = response_text.index(THINK_KEYWORD) + len(THINK_KEYWORD)
 
-            # try:
-            #     json_response = json.loads(response_text)
-            #     json_responses.append(json_response)
+                thinking_section = response_text[:think_end_idx].strip()
+                response_text = response_text[think_end_idx:].strip()
 
-            #     print(candidate)
-            #     print(json_response)
+                json_response = json.loads(response_text)
+                json_responses.append(json_response)
 
-            #     do_merge = json_response["merge"]
-            #     confidence = json_response["confidence"]
+                print(json_response)
 
-            #     if do_merge and confidence >= 0.9:
-            #         dataset.append(candidate["merged_row"])
-            #     elif do_merge and confidence < 0.9:
-            #         print("Model not confident!")
-            #     else:
-            #         dataset.extend(candidate["history"])
-            # except Exception as e:
-            #     print("Failed to parse!", e)
+                do_merge = json_response["merge"]
+                confidence = json_response["confidence"]
+
+                if do_merge and confidence >= 0.9:
+                    dataset.append(candidate["merged_row"])
+                elif do_merge and confidence < 0.9:
+                    print(
+                        f"[WARNING] The model was not confident in its answer! Keeping the original captions!"
+                    )
+                    dataset.extend(candidate["history"])
+                else:
+                    dataset.extend(candidate["history"])
+
+            except (json.JSONDecodeError, Exception) as e:
+                print(f"Failed to parse output for {candidate['video_id']}: {e}")
+                dataset.extend(candidate["history"])
+
+
+# Write the captions in a file
+with open(OUTPUT_DATA_PATH, "wb") as f:
+    pkl.dump(dataset, f)
+
+print(f"Saved {len(dataset)} samples in {OUTPUT_DATA_PATH}")
