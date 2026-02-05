@@ -12,7 +12,7 @@
 #SBATCH --cpus-per-task=48
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=1000000
-#SBATCH --array=0-40%5
+#SBATCH --array=0-40%10
 
 cd /u/dduka/project/AVION/
 

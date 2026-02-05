@@ -13,7 +13,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=1000000
 
-#SBATCH --array=0-40%8
+#SBATCH --array=0-40%10
 
 cd /u/dduka/project/AVION/
 
@@ -41,8 +41,8 @@ module load cuda/12.8
 uv run ./second_party/qwen3vl/vllm_refine.py \
     --start_idx $START_IDX \
     --end_idx $END_IDX \
-    --batch_size 512 \
+    --batch_size 2048 \
     --tensor_parallel_size 4 \
-    --output_file /dais/fs/scratch/dduka/databases/ego4d/qwen_refinement/standard/output_1_caption_ttrv_scaled.jsonl \
+    --output_file /dais/fs/scratch/dduka/databases/ego4d/qwen_refinement/standard/output_1_caption_ttrv_form_standard_checkpoint_400.jsonl \
     --pkl_path /dais/fs/scratch/dduka/databases/ego4d/ego4d_train_with_uuid.pkl \
-    --model_path /dais/fs/scratch/dduka/training_metadata/ttrv/checkpoints/TTRL-verl/tag-Qwen/Qwen3-VL-8B-Instruct/TTRL-EGO4D-TAR-SCALED-SEGMENTS-grpo/global_step_400/actor_merged/
+    --model_path /dais/fs/scratch/dduka/training_metadata/ttrv/checkpoints/TTRL-verl/tag-Qwen/Qwen3-VL-8B-Instruct/TTRL-EGO4D-TAR-ORIGINAL-SEGMENTS-grpo/global_step_400/actor_merged/
