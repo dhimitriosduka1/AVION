@@ -18,4 +18,9 @@ module load anaconda/3/2023.03
 
 conda activate avion
 
-jupyter lab --no-browser --ip=0.0.0.0 --port=8888 --NotebookApp.token='' --NotebookApp.password=''
+jupyter lab --no-browser --ip=0.0.0.0 --port=8888 \
+  --ServerApp.token='' \
+  --ServerApp.password='' \
+  --IdentityProvider.token='' \
+  --NotebookApp.token='' \
+  --NotebookApp.password=''
