@@ -13,7 +13,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=1000000
 
-#SBATCH --array=0-40%10
+#SBATCH --array=16-19
 
 cd /u/dduka/project/AVION/
 
