@@ -2,6 +2,9 @@ import torch
 import pickle as pkl
 import json
 import re
+import os
+import networkx as nx
+import matplotlib.pyplot as plt
 from vllm import LLM, SamplingParams
 from collections import defaultdict
 from transformers import AutoTokenizer
@@ -11,9 +14,8 @@ MODEL_ID = "Qwen/Qwen3-32B"
 MAX_MODEL_CONTEXT = 32768
 GPU_COUNT = torch.cuda.device_count()
 
-# Sliding Window Settings
-WINDOW_SIZE = 80  # Number of captions per LLM call
-OVERLAP_SIZE = 20  # How many captions to repeat in the next chunk
+WINDOW_SIZE = 60
+OVERLAP_SIZE = 15
 
 INPUT_DATA_PATH = (
     "/dais/fs/scratch/dduka/databases/ego4d/ego4d_train_deduplicated_with_uuid.pkl"
@@ -21,6 +23,9 @@ INPUT_DATA_PATH = (
 OUTPUT_DATA_PATH = (
     "/dais/fs/scratch/dduka/databases/ego4d/ego4d_train_timestamp_fixed.pkl"
 )
+SAVE_DIR = "/u/dduka/project/AVION/images"
+
+os.makedirs(SAVE_DIR, exist_ok=True)
 
 # --- PROMPTS ---
 PROMPT_SYSTEM = """You are an expert data curator for **Egocentric Video (First-Person)** datasets.
@@ -36,6 +41,8 @@ This hurts training. We need to **merge** these into single events.
 
 **INPUT CAPTIONS** (Format: [start, end] #C caption):
 {captions_str}
+
+The captions are sorted by start time, but may have significant overlaps.
 
 ### INSTRUCTIONS:
 
@@ -54,41 +61,57 @@ This hurts training. We need to **merge** these into single events.
    - Every input caption must appear in the output, but with the **new unified timestamps** of its cluster.
 
 **OUTPUT FORMAT**:
-Return ONLY a JSON array of objects:
-```json
-[
-    {{"uuid": "original_uuid", "start": unified_start, "end": unified_end, "caption": "original_text"}},
-    ...
-]
-```"""
+[["uuid_1", "uuid_2"], ["uuid_3"]]"""
 
 
 def get_sliding_window_chunks(items, window_size, overlap):
     chunks = []
-    if len(items) <= window_size:
-        return [items]
-
     i = 0
     while i < len(items):
-        chunk = items[i : i + window_size]
-        chunks.append(chunk)
-        i += window_size - overlap
-        if i + overlap >= len(items):
+        chunks.append(items[i : i + window_size])
+        if i + window_size >= len(items):
             break
+        i += window_size - overlap
     return chunks
 
 
-def main():
-    print(f"Loading data from {INPUT_DATA_PATH}...")
-    with open(INPUT_DATA_PATH, "rb") as f:
-        dataset = pkl.load(f)  # Expected format: [UUID, VIDEO_ID, START, END, CAPTION]
+def visualize_chunk(chunk_items, clusters, chunk_idx, video_id):
+    plt.figure(figsize=(10, 7))
+    temp_G = nx.Graph()
+    chunk_uuids = [c[0] for c in chunk_items]
+    temp_G.add_nodes_from(chunk_uuids)
+    for cluster in clusters:
+        for i in range(len(cluster) - 1):
+            if cluster[i] in chunk_uuids and cluster[i + 1] in chunk_uuids:
+                temp_G.add_edge(cluster[i], cluster[i + 1])
+    pos = nx.spring_layout(temp_G, k=0.3, seed=42)
+    components = list(nx.connected_components(temp_G))
+    colors = plt.cm.get_cmap("rainbow", len(components))
+    for i, nodes in enumerate(components):
+        nx.draw_networkx_nodes(
+            temp_G, pos, nodelist=list(nodes), node_color=[colors(i)], node_size=300
+        )
+    nx.draw_networkx_edges(temp_G, pos, alpha=0.3)
+    nx.draw_networkx_labels(temp_G, pos, font_size=6)
+    plt.title(f"Video: {video_id} | Chunk: {chunk_idx}")
+    plt.axis("off")
+    plt.savefig(
+        os.path.join(SAVE_DIR, f"graph_{video_id}_chunk_{chunk_idx}.png"), dpi=150
+    )
+    plt.close()
 
-    # Group by Video ID
+
+def main():
+    print(f"Loading data...")
+    with open(INPUT_DATA_PATH, "rb") as f:
+        dataset = pkl.load(f)
+
+    row_lookup = {row[0]: row for row in dataset}
     grouped_by_video = defaultdict(list)
     for row in dataset:
         grouped_by_video[row[1]].append(row)
 
-    print(f"Initializing vLLM with {GPU_COUNT} GPUs...")
+    print(f"Initializing vLLM...")
     llm = LLM(
         model=MODEL_ID,
         tensor_parallel_size=GPU_COUNT,
@@ -98,17 +121,15 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
 
     all_prompts = []
-    metadata = []
+    chunk_metadata = []
 
-    print("Generating overlapping chunks...")
     for vid, items in grouped_by_video.items():
-        items.sort(key=lambda x: x[2])  # Sort by start time
+        items.sort(key=lambda x: x[2])
         chunks = get_sliding_window_chunks(items, WINDOW_SIZE, OVERLAP_SIZE)
-
         for chunk in chunks:
-            # Format: [UUID | START | END] CAPTION
-            caps_str = "\n".join([f"[{c[0]} | {c[2]} | {c[3]}] {c[4]}" for c in chunk])
-
+            caps_str = "\n".join(
+                [f"ID: {c[0]} | [{c[2]}-{c[3]}] | {c[4]}" for c in chunk]
+            )
             prompt = tokenizer.apply_chat_template(
                 [
                     {"role": "system", "content": PROMPT_SYSTEM},
@@ -119,63 +140,63 @@ def main():
                 ],
                 tokenize=False,
                 add_generation_prompt=True,
-                enable_thinking=True,
             )
-
             all_prompts.append(prompt)
-            metadata.append(vid)
+            chunk_metadata.append({"vid": vid, "items": chunk})
 
-    all_prompts = all_prompts[:2]  # For testing, limit to 2 prompts
+    # For a full run, remove the slicing below
+    all_prompts = all_prompts[:2]
 
-    print(f"Executing batch inference ({len(all_prompts)} prompts)...")
     sampling_params = SamplingParams(
         temperature=0.6,
         top_p=0.95,
         top_k=20,
         max_tokens=16384,
     )
-
     outputs = llm.generate(all_prompts, sampling_params)
 
-    temporal_reconciliation = defaultdict(list)
-    uuid_to_static_data = {}
+    G = nx.Graph()
+    G.add_nodes_from(row_lookup.keys())
 
+    print("Processing outputs and building graph...")
     for i, output in enumerate(outputs):
-        try:
-            raw_text = output.outputs[0].text
+        raw_text = output.outputs[0].text
 
-            print(f"Raw LLM Output for Video {metadata[i]}:\n{raw_text}\n{'-'*50}")
+        # 1. Strip thinking blocks
+        clean_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL)
 
-            json_match = re.search(r"```json\s*(.*?)\s*```", raw_text, re.DOTALL)
-            json_str = json_match.group(1) if json_match else raw_text
-            chunk_results = json.loads(json_str)
+        # 2. Extract JSON (Finds the outermost list)
+        match = re.search(r"(\[[\s\S]*\])", clean_text)
+        if match:
+            try:
+                clusters = json.loads(match.group(1))
+                if i < 20:
+                    visualize_chunk(
+                        chunk_metadata[i]["items"],
+                        clusters,
+                        i,
+                        chunk_metadata[i]["vid"],
+                    )
 
-            for entry in chunk_results:
-                uid = entry["uuid"]
-                temporal_reconciliation[uid].append(
-                    (float(entry["start"]), float(entry["end"]))
-                )
-                # We update the map (assuming the text/vid_id stays the same as input)
-                if uid not in uuid_to_static_data:
-                    # Search original dataset or use chunk data
-                    uuid_to_static_data[uid] = {
-                        "vid": metadata[i],
-                        "cap": entry["caption"],
-                    }
-        except Exception as e:
-            continue
+                for cluster in clusters:
+                    for j in range(len(cluster) - 1):
+                        u1, u2 = cluster[j], cluster[j + 1]
+                        if u1 in row_lookup and u2 in row_lookup:
+                            G.add_edge(u1, u2)
+            except Exception as e:
+                print(f"JSON error in chunk {i}: {e}")
+        else:
+            print(f"No valid JSON pattern in chunk {i}")
 
-    # Create Final Dataset: [UUID, VIDEO_ID, START, END, CAPTION]
+    print("Reconciling clusters into final dataset...")
     final_dataset = []
-    for uid, times in temporal_reconciliation.items():
-        # Handle overlaps by taking the widest bounds suggested across windows
-        final_start = min(t[0] for t in times)
-        final_end = max(t[1] for t in times)
-
-        static = uuid_to_static_data[uid]
-        final_dataset.append(
-            [uid, static["vid"], final_start, final_end, static["cap"]]
-        )
+    for component in nx.connected_components(G):
+        starts = [row_lookup[uid][2] for uid in component]
+        ends = [row_lookup[uid][3] for uid in component]
+        u_start, u_end = min(starts), max(ends)
+        for uid in component:
+            orig = row_lookup[uid]
+            final_dataset.append([uid, orig[1], u_start, u_end, orig[4]])
 
     print(f"Saving {len(final_dataset)} rows to {OUTPUT_DATA_PATH}...")
     with open(OUTPUT_DATA_PATH, "wb") as f:

@@ -1,10 +1,10 @@
 #!/bin/bash -l
 
-#SBATCH -o /dais/fs/scratch/dduka/logs/avion/dual_encoder_1_caption_%N.out
-#SBATCH -e /dais/fs/scratch/dduka/logs/avion/dual_encoder_1_caption_%N.err
+#SBATCH -o /dais/fs/scratch/dduka/logs/avion/lavila_ttrv_s_s_%A_%a_%x_%j_%N.out
+#SBATCH -e /dais/fs/scratch/dduka/logs/avion/lavila_ttrv_s_s_%A_%a_%x_%j_%N.err
 
-#SBATCH -J de_one_caption_ttrv_standard_standard_400_step
-#SBATCH --time=14:59:59
+#SBATCH -J lavila_ttrv_s_s
+#SBATCH --time=23:59:59
 
 #SBATCH --nodes=1
 #SBATCH --partition="gpu1"
@@ -14,6 +14,8 @@
 #SBATCH --gres=gpu:h200:2
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=500000
+
+#SBATCH --array=0-1%1
 
 module purge
 micromamba activate avion_fa2
@@ -34,7 +36,7 @@ echo "GPUs per node: $SLURM_GPUS_ON_NODE"
 
 cd /u/dduka/project/AVION
 
-RUN_NAME=DAIS_DUAL_ENC_1_CAPTION_TTRV_STANDARD_STANDARD_400_STEP
+RUN_NAME=DAIS_LAVILA_TTRV_STANDARD_STANDARD_400_STEP
 EXP_PATH=/dais/fs/scratch/dduka/training_metadata/avion/$RUN_NAME
 
 mkdir -p $EXP_PATH
@@ -52,6 +54,8 @@ srun --cpu_bind=v --accel-bind=gn torchrun \
     --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
     --rdzv_backend=c10d \
     scripts/main_lavila_pretrain.py \
+    --train-metadata /dais/fs/scratch/dduka/databases/ego4d/qwen_refinement/standard/pickle/ego4d_train_ttrv_strandard_standard_400_step.pkl \
+    --train-metadata-aux /dais/fs/scratch/dduka/databases/ego4d/ego4d_train.narrator_63690737.return_10.pkl \
     --use-flash-attn \
     --grad-checkpointing \
     --use-fast-conv1 \
@@ -63,4 +67,3 @@ srun --cpu_bind=v --accel-bind=gn torchrun \
     --wandb-run-name $RUN_NAME \
     --workers 16 \
     --prefetch-factor 2 \
-    --train-metadata /dais/fs/scratch/dduka/databases/ego4d/qwen_refinement/standard/pickle/ego4d_train_ttrv_strandard_standard_400_step.pkl \
