@@ -3,6 +3,7 @@ import pickle as pkl
 import json
 import re
 import os
+import argparse
 from vllm import LLM, SamplingParams
 from collections import defaultdict
 from transformers import AutoTokenizer
@@ -14,13 +15,13 @@ GPU_COUNT = torch.cuda.device_count()
 
 WINDOW_SIZE = 60
 OVERLAP_SIZE = 15
+BATCH_SIZE = 128
 
 INPUT_DATA_PATH = (
     "/dais/fs/scratch/dduka/databases/ego4d/ego4d_train_deduplicated_with_uuid.pkl"
 )
-OUTPUT_DATA_PATH = (
-    "/dais/fs/scratch/dduka/databases/ego4d/ego4d_train_timestamp_fixed.pkl"
-)
+
+OUTPUT_DIR = "/dais/fs/scratch/dduka/databases/ego4d/shards/"
 SAVE_DIR = "/u/dduka/project/AVION/images"
 
 os.makedirs(SAVE_DIR, exist_ok=True)
@@ -74,27 +75,56 @@ def get_sliding_window_chunks(items, window_size, overlap):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--job_idx", type=int, default=0, help="Index of the current job"
+    )
+    parser.add_argument(
+        "--num_jobs", type=int, default=1, help="Total number of jobs in array"
+    )
+    args = parser.parse_args()
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
     print(f"Loading data...")
     with open(INPUT_DATA_PATH, "rb") as f:
         dataset = pkl.load(f)
 
-    row_lookup = {row[0]: list(row) for row in dataset}
+    # Group by video
     grouped_by_video = defaultdict(list)
     for row in dataset:
         grouped_by_video[row[1]].append(row)
+
+    # Sort video IDs to ensure consistency across all parallel jobs
+    all_video_ids = sorted(list(grouped_by_video.keys()))
+
+    # --- SUBSET LOGIC FOR JOB ARRAY ---
+    # Divide the video list into N chunks
+    chunk_size = (len(all_video_ids) + args.num_jobs - 1) // args.num_jobs
+    start_idx = args.job_idx * chunk_size
+    end_idx = min(start_idx + chunk_size, len(all_video_ids))
+
+    my_video_ids = all_video_ids[start_idx:end_idx]
+    print(f"Job {args.job_idx}/{args.num_jobs}: Processing {len(my_video_ids)} videos.")
+
+    # Only keep data for videos assigned to this job
+    row_lookup = {
+        row[0]: list(row) for vid in my_video_ids for row in grouped_by_video[vid]
+    }
 
     print(f"Initializing vLLM...")
     llm = LLM(
         model=MODEL_ID,
         tensor_parallel_size=GPU_COUNT,
-        gpu_memory_utilization=0.92,
+        gpu_memory_utilization=0.90,
         max_model_len=MAX_MODEL_CONTEXT,
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
 
     all_prompts = []
-    for _, items in grouped_by_video.items():
-        items.sort(key=lambda x: x[2])
+    for vid in my_video_ids:
+        items = grouped_by_video[vid]
+        items.sort(key=lambda x: x[2])  # Sort by start time
         chunks = get_sliding_window_chunks(items, WINDOW_SIZE, OVERLAP_SIZE)
         for chunk in chunks:
             caps_str = "\n".join(
@@ -110,11 +140,9 @@ def main():
                 ],
                 tokenize=False,
                 add_generation_prompt=True,
+                enable_thinking=True,
             )
             all_prompts.append(prompt)
-
-    # For a full run, remove the slicing below
-    all_prompts = all_prompts[:2]
 
     sampling_params = SamplingParams(
         temperature=0.6,
@@ -122,43 +150,46 @@ def main():
         top_k=20,
         max_tokens=16384,
     )
-    outputs = llm.generate(all_prompts, sampling_params)
 
-    print("Processing outputs and updating timestamps...")
-    for i, output in enumerate(outputs):
-        raw_text = output.outputs[0].text
-        clean_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL)
-        match = re.search(r"(\[[\s\S]*\])", clean_text)
+    print(f"Generating for {len(all_prompts)} total windows...")
+    for i in range(0, len(all_prompts), BATCH_SIZE):
+        batch = all_prompts[i : i + BATCH_SIZE]
+        outputs = llm.generate(batch, sampling_params, use_tqdm=True)
 
-        if match:
-            try:
-                clusters = json.loads(match.group(1))
-                for cluster in clusters:
-                    # Filter valid IDs present in our original dataset
-                    valid_uids = [uid for uid in cluster if uid in row_lookup]
-                    if not valid_uids:
-                        continue
+        print(f"Batch: {batch}")
 
-                    # Calculate the union of timestamps for this cluster
-                    u_start = min(row_lookup[uid][2] for uid in valid_uids)
-                    u_end = max(row_lookup[uid][3] for uid in valid_uids)
+        for output in outputs:
+            raw_text = output.outputs[0].text
+            clean_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL)
+            match = re.search(r"(\[[\s\S]*\])", clean_text)
 
-                    # Update the row_lookup directly
-                    for uid in valid_uids:
-                        row_lookup[uid][2] = u_start
-                        row_lookup[uid][3] = u_end
-                        
-            except Exception as e:
-                print(f"JSON error in chunk {i}: {e}")
-        else:
-            print(f"No valid JSON pattern in chunk {i}")
+            print(f"Raw text: {raw_text}")
+            print(f"Match: {match}")
 
-    print("Finalizing dataset...")
+            if match:
+                try:
+                    clusters = json.loads(match.group(1))
+                    for cluster in clusters:
+                        valid_uids = [uid for uid in cluster if uid in row_lookup]
+                        if not valid_uids:
+                            continue
+
+                        u_start = min(row_lookup[uid][2] for uid in valid_uids)
+                        u_end = max(row_lookup[uid][3] for uid in valid_uids)
+
+                        for uid in valid_uids:
+                            row_lookup[uid][2] = u_start
+                            row_lookup[uid][3] = u_end
+                except:
+                    continue
+
+    # Save specific shard
+    shard_path = os.path.join(OUTPUT_DIR, f"shard_{args.job_idx}.pkl")
     final_dataset = list(row_lookup.values())
-
-    print(f"Saving {len(final_dataset)} rows to {OUTPUT_DATA_PATH}...")
-    with open(OUTPUT_DATA_PATH, "wb") as f:
+    with open(shard_path, "wb") as f:
         pkl.dump(final_dataset, f)
+
+    print(f"Shard {args.job_idx} saved with {len(final_dataset)} rows.")
 
 
 if __name__ == "__main__":
