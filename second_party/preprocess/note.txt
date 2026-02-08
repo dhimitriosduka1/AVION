@@ -62,4 +62,6 @@ When performing the manual annotation of the dataset, I noticed that there are a
         """
 
         After performing this step, the dataset has a size of 3995182, which means that 17055 captions where removed. The dataset was saved in a file called ego4d_train_deduplicated_with_uuid.pkl
-
+    3. The next step is to identify dual captioning (same action but phrased differently). In this case, we fix the timestamps of both segments and keep both of them in the dataset so that 
+        the different caption version can serve as augmentations during training.
+ 

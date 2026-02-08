@@ -1,320 +1,196 @@
-import os
-import re
-import json
 import torch
 import pickle as pkl
-from tqdm import tqdm
-from collections import defaultdict
-
+import json
+import re
+import os
+import argparse
 from vllm import LLM, SamplingParams
+from collections import defaultdict
+from transformers import AutoTokenizer
 
 # --- CONFIGURATION ---
-DEFAULT_MODEL_PATH = "Qwen/Qwen3-8B"
-DEDUPLICATED_DATA_PATH = (
-    "/ptmp/dduka/databases/ego4d/ego4d_train_deduplicated_with_uuid.pkl"
-)
-OUTPUT_DATA_PATH = (
-    "/ptmp/dduka/databases/ego4d/ego4d_train_deduplicated_and_llm_merged_with_uuid.pkl"
-)
-VIDEO_ROOT = "/ptmp/dduka/databases/ego4d/video_320px_15sec/"
-
+MODEL_ID = "Qwen/Qwen3-32B"
+MAX_MODEL_CONTEXT = 32768
 GPU_COUNT = torch.cuda.device_count()
-PROMPT_TEMPLATE = """"""
+
+WINDOW_SIZE = 60
+OVERLAP_SIZE = 15
+BATCH_SIZE = 128
+
+INPUT_DATA_PATH = (
+    "/dais/fs/scratch/dduka/databases/ego4d/ego4d_train_deduplicated_with_uuid.pkl"
+)
+
+OUTPUT_DIR = "/dais/fs/scratch/dduka/databases/ego4d/shards/"
+SAVE_DIR = "/u/dduka/project/AVION/images"
+
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+# --- PROMPTS ---
+PROMPT_SYSTEM = """You are an expert data curator for **Egocentric Video (First-Person)** datasets.
+Your task is to clean noisy training data where multiple annotators have described the **same atomic action** using slightly different words and slightly offset timestamps.
+
+**Your Goal:** Normalize these into a single temporal event while **preserving all unique text descriptions** as valuable linguistic augmentations."""
+
+PROMPT_USER_TEMPLATE = """### TASK: Semantic Grouping & Timestamp Alignment
+**CONTEXT**: 
+The input contains captions from an egocentric video (camera wearer "#C"). 
+Currently, the data is noisy: the same action (e.g., "#C picks up the cup") is listed multiple times with slight timestamp variations and synonym changes (e.g., "#C takes the cup").
+This hurts training. We need to **merge** these into single events.
+
+**INPUT CAPTIONS** (Format: [start, end] #C caption):
+{captions_str}
+
+The captions are sorted by start time, but may have significant overlaps.
+
+### INSTRUCTIONS:
+
+1. **IDENTIFY CLUSTERS**: Group captions that describe the **EXACT SAME VISUAL MOMENT**.
+   - **Temporal overlap**: They must overlap significantly or be nearly consecutive.
+   - **Semantic identity**: They must describe the **same atomic interaction** (e.g., "opens fridge" vs "pulls fridge door").
+   - **Ignore Formatting**: Ignore differences in capitalization, punctuation, or "#C " prefix.
+
+2. **COMPUTE UNION**: For each cluster:
+   - `new_start` = Minimum start time of the group.
+   - `new_end` = Maximum end time of the group.
+
+3. **PRESERVE TEXT**: 
+   - Do NOT delete any captions. 
+   - Do NOT summarize text.
+   - Every input caption must appear in the output, but with the **new unified timestamps** of its cluster.
+
+**OUTPUT FORMAT**:
+[["uuid_1", "uuid_2"], ["uuid_3"]]"""
 
 
-def generate_merge_candidates(samples_by_video_id):
-    print("Generating merge candidates...")
-
-    dataset = []
-    merge_candidates = []
-    for video_id, samples in tqdm(samples_by_video_id.items()):
-        samples.sort(key=lambda x: x[2])
-
-        if not samples:
-            continue
-
-        current_merged = list(samples[0])
-        history = [samples[0]]
-
-        for i in range(1, len(samples)):
-            next_sample = samples[i]
-
-            if next_sample[2] <= current_merged[3]:
-                current_merged[3] = max(current_merged[3], next_sample[3])
-                history.append(next_sample)
-            else:
-                if len(history) > 1:
-                    merge_candidates.append(
-                        {
-                            "video_id": video_id,
-                            "history": list(history),
-                            "merged_row": list(current_merged),
-                        }
-                    )
-                else:
-                    dataset.append(tuple(current_merged))
-
-                current_merged, history = list(next_sample), [next_sample]
-
-        # Handle the final group
-        if len(history) > 1:
-            merge_candidates.append(
-                {
-                    "video_id": video_id,
-                    "history": list(history),
-                    "merged_row": list(current_merged),
-                }
-            )
-        else:
-            dataset.append(tuple(current_merged))
-
-    if merge_candidates:
-        print(
-            f"Found {len(merge_candidates)} potential merges. {sum(len(s['history']) for s in merge_candidates)} samples involved."
-        )
-        print(
-            f"Average merge candidate has {sum(len(s['history']) for s in merge_candidates) / len(merge_candidates):.2f} samples."
-        )
-    else:
-        print("No merge candidates found.")
-
-    return dataset, merge_candidates
+def get_sliding_window_chunks(items, window_size, overlap):
+    chunks = []
+    i = 0
+    while i < len(items):
+        chunks.append(items[i : i + window_size])
+        if i + window_size >= len(items):
+            break
+        i += window_size - overlap
+    return chunks
 
 
-def load_model():
-    llm = LLM(
-        model=DEFAULT_MODEL_PATH,
-        tensor_parallel_size=GPU_COUNT,
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--job_idx", type=int, default=0, help="Index of the current job"
     )
+    parser.add_argument(
+        "--num_jobs", type=int, default=1, help="Total number of jobs in array"
+    )
+    args = parser.parse_args()
 
-    tokenizer = llm.get_tokenizer()
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    print(f"Loading data...")
+    with open(INPUT_DATA_PATH, "rb") as f:
+        dataset = pkl.load(f)
+
+    # Group by video
+    grouped_by_video = defaultdict(list)
+    for row in dataset:
+        grouped_by_video[row[1]].append(row)
+
+    # Sort video IDs to ensure consistency across all parallel jobs
+    all_video_ids = sorted(list(grouped_by_video.keys()))
+
+    # --- SUBSET LOGIC FOR JOB ARRAY ---
+    # Divide the video list into N chunks
+    chunk_size = (len(all_video_ids) + args.num_jobs - 1) // args.num_jobs
+    start_idx = args.job_idx * chunk_size
+    end_idx = min(start_idx + chunk_size, len(all_video_ids))
+
+    my_video_ids = all_video_ids[start_idx:end_idx]
+    print(f"Job {args.job_idx}/{args.num_jobs}: Processing {len(my_video_ids)} videos.")
+
+    # Only keep data for videos assigned to this job
+    row_lookup = {
+        row[0]: list(row) for vid in my_video_ids for row in grouped_by_video[vid]
+    }
+
+    print(f"Initializing vLLM...")
+    llm = LLM(
+        model=MODEL_ID,
+        tensor_parallel_size=GPU_COUNT,
+        gpu_memory_utilization=0.90,
+        max_model_len=MAX_MODEL_CONTEXT,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+
+    all_prompts = []
+    for vid in my_video_ids:
+        items = grouped_by_video[vid]
+        items.sort(key=lambda x: x[2])  # Sort by start time
+        chunks = get_sliding_window_chunks(items, WINDOW_SIZE, OVERLAP_SIZE)
+        for chunk in chunks:
+            caps_str = "\n".join(
+                [f"ID: {c[0]} | [{c[2]}-{c[3]}] | {c[4]}" for c in chunk]
+            )
+            prompt = tokenizer.apply_chat_template(
+                [
+                    {"role": "system", "content": PROMPT_SYSTEM},
+                    {
+                        "role": "user",
+                        "content": PROMPT_USER_TEMPLATE.format(captions_str=caps_str),
+                    },
+                ],
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=True,
+            )
+            all_prompts.append(prompt)
 
     sampling_params = SamplingParams(
-        temperature=0.7, top_p=0.95, top_k=20, max_tokens=2048
+        temperature=0.6,
+        top_p=0.95,
+        top_k=20,
+        max_tokens=16384,
     )
-    return llm, tokenizer, sampling_params
+
+    print(f"Generating for {len(all_prompts)} total windows...")
+    for i in range(0, len(all_prompts), BATCH_SIZE):
+        batch = all_prompts[i : i + BATCH_SIZE]
+        outputs = llm.generate(batch, sampling_params, use_tqdm=True)
+
+        print(f"Batch: {batch}")
+
+        for output in outputs:
+            raw_text = output.outputs[0].text
+            clean_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL)
+            match = re.search(r"(\[[\s\S]*\])", clean_text)
+
+            print(f"Raw text: {raw_text}")
+            print(f"Match: {match}")
+
+            if match:
+                try:
+                    clusters = json.loads(match.group(1))
+                    for cluster in clusters:
+                        valid_uids = [uid for uid in cluster if uid in row_lookup]
+                        if not valid_uids:
+                            continue
+
+                        u_start = min(row_lookup[uid][2] for uid in valid_uids)
+                        u_end = max(row_lookup[uid][3] for uid in valid_uids)
+
+                        for uid in valid_uids:
+                            row_lookup[uid][2] = u_start
+                            row_lookup[uid][3] = u_end
+                except:
+                    continue
+
+    # Save specific shard
+    shard_path = os.path.join(OUTPUT_DIR, f"shard_{args.job_idx}.pkl")
+    final_dataset = list(row_lookup.values())
+    with open(shard_path, "wb") as f:
+        pkl.dump(final_dataset, f)
+
+    print(f"Shard {args.job_idx} saved with {len(final_dataset)} rows.")
 
 
 if __name__ == "__main__":
-    print(f"Using {GPU_COUNT} GPUs")
-
-    llm, tokenizer, sampling_params = load_model()
-
-    if os.path.exists(DEDUPLICATED_DATA_PATH):
-        with open(DEDUPLICATED_DATA_PATH, "rb") as f:
-            dataset = pkl.load(f)
-            print(f"Loaded {len(dataset)} samples.")
-    else:
-        print(f"Path not found: {DEDUPLICATED_DATA_PATH}")
-        dataset = []
-
-    samples_by_video_id = defaultdict(list)
-    for sample in dataset:
-        samples_by_video_id[sample[1]].append(sample)
-
-    dataset, merge_candidates = generate_merge_candidates(samples_by_video_id)
-
-    # Put your prompts in a list
-    prompts = [
-        "Compare these two egocentric video captions:\n1: '#C C shapes an origami'\n2: '#C C picks-up a glue from the table with her right hand.'\nDo they describe the same action or state? Answer with YES or No.",
-        "Compare these two egocentric video captions:\n1: '#C C shapes an origami'\n2: '#C C makes paper craft on the table in a room.'\nDo they describe the same action or state? Answer with YES or No.",
-    ]
-
-    task_batches = [[{"role": "user", "content": p}] for p in prompts]
-
-    outputs = llm.chat(
-        task_batches,
-        sampling_params=sampling_params,
-        chat_template_kwargs={"enable_thinking": True},
-    )
-
-    for i, output in enumerate(outputs):
-        raw_text = output.outputs[0].text
-
-        clean_text = re.sub(
-            r"<think>.*?</think>", "", raw_text, flags=re.DOTALL
-        ).strip()
-
-        print(f"\n--- Result for Task {i+1} ---")
-        try:
-            # Try to parse the clean text as JSON
-            data = json.loads(clean_text)
-            print(f"Merge Decision: {data['merge']}")
-            print(f"Confidence: {data['confidence']}")
-        except json.JSONDecodeError:
-            # If parsing fails, print the raw text
-            print(f"Raw Output: {raw_text}")
-
-    # prompt = "Compare these two egocentric video captions:\n1: '#C C shapes an origami'\n2: '#C C picks-up a glue from the table with her right hand.'\n Do they describe the same action or state? Answer with a JSON object with two fields: 'merge' (boolean) indicating whether to merge the captions, and 'confidence' (float between 0 and 1) indicating your confidence level in the decision."
-    # prompt2 = "Compare these two egocentric video captions:\n1: '#C C shapes an origami'\n2: '#C C makes paper craft on the table in a room.'\n Do they describe the same action or state? Answer with a JSON object with two fields: 'merge' (boolean) indicating whether to merge the captions, and 'confidence' (float between 0 and 1) indicating your confidence level in the decision."
-    # messages = [
-    #     {"role": "user", "content": prompt},
-    #     {"role": "assistant", "content": prompt2},
-    # ]
-
-    # # Generate outputs
-    # outputs = llm.chat(
-    #     [messages],
-    #     sampling_params=sampling_params,
-    # )
-
-    # for output in outputs:
-    #     # prompt = output.prompt # Already defined in your loop
-    #     generated_text = output.outputs[0].text
-
-    #     print("-" * 30)
-    #     print(f"PROMPT: {output.prompt}")
-    #     print(f"RESPONSE:\n{generated_text}")
-
-    # for output in outputs:
-
-    #     prompt = output.prompt
-    #     generated_text = output.outputs[0].text
-    #     print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
-
-
-# def prepare_prompt(candidates, tokenizer):
-#     """
-#     Prepare prompts for vLLM generate() API with multi-modal data.
-#     Uses process_vision_info to handle video processing.
-#     """
-#     batch_inputs = []
-#     for candidate in candidates:
-#         chunk_paths, first_chunk = get_video_chunks_for_segments(
-#             candidate["video_id"],
-#             candidate["merged_row"][2],
-#             candidate["merged_row"][3],
-#         )
-
-#         segments_as_str = []
-#         for idx, history_item in enumerate(candidate["history"]):
-#             segments_as_str.append(
-#                 f'- {idx + 1}. [{(history_item[2] - first_chunk):.2f}s - {(history_item[3] - first_chunk):.2f}s]: "{history_item[4]}"'
-#             )
-
-#         segments_formatted = "\n".join(segments_as_str)
-#         prompt_filled = PROMPT_TEMPLATE.format(segments=segments_formatted)
-
-#         # Build messages in Qwen VL chat format
-#         messages = [
-#             {
-#                 "role": "user",
-#                 "content": [
-#                     *[
-#                         {"type": "video", "video": path, "fps": FPS}
-#                         for path in chunk_paths
-#                     ],
-#                     {"type": "text", "text": prompt_filled},
-#                 ],
-#             }
-#         ]
-
-#         # Apply chat template to get the prompt text
-#         prompt = tokenizer.apply_chat_template(
-#             messages, tokenize=False, add_generation_prompt=True
-#         )
-
-#         # Use process_vision_info to extract and process video data
-#         _, video_inputs = process_vision_info(messages, return_video_metadata=True)
-
-#         batch_inputs.append(
-#             {
-#                 "prompt": prompt,
-#                 "multi_modal_data": {"video": video_inputs},
-#             }
-#         )
-
-#     return batch_inputs
-
-
-# def chunk_list(lst, n):
-#     """Yield successive n-sized chunks from lst."""
-#     for i in range(0, len(lst), n):
-#         yield lst[i : i + n]
-
-
-# if __name__ == "__main__":
-#     print(f"Using {GPU_COUNT} GPUs")
-
-#     llm, tokenizer, sampling_params = load_model()
-
-#     if os.path.exists(DEDUPLICATED_DATA_PATH):
-#         with open(DEDUPLICATED_DATA_PATH, "rb") as f:
-#             dataset = pkl.load(f)
-#             print(f"Loaded {len(dataset)} samples.")
-#     else:
-#         print(f"Path not found: {DEDUPLICATED_DATA_PATH}")
-#         dataset = []
-
-#     samples_by_video_id = defaultdict(list)
-#     for sample in dataset:
-#         samples_by_video_id[sample[1]].append(sample)
-
-
-#     dataset, merge_candidates, auto_merged_count = generate_merge_candidates(
-#         samples_by_video_id
-#     )
-
-#     merged_count = 0
-#     for candidates in tqdm(chunk_list(merge_candidates, MINI_BATCH_SIZE)):
-#         batch_inputs = prepare_prompt(candidates, tokenizer)
-
-#         outputs = llm.generate(batch_inputs, sampling_params=sampling_params)
-
-#         for candidate, output in zip(candidates, outputs):
-#             response_text = output.outputs[0].text.strip()
-
-#             try:
-#                 think_end_idx = response_text.index(THINK_KEYWORD) + len(THINK_KEYWORD)
-
-#                 thinking_section = response_text[:think_end_idx].strip()
-#                 response_text = response_text[think_end_idx:].strip()
-
-#                 json_response = json.loads(response_text)
-
-#                 do_merge = json_response["merge"]
-#                 confidence = json_response["confidence"]
-
-#                 if do_merge and confidence >= 0.9:
-#                     print(f"[INFO] Segments must be merged!")
-#                     dataset.append(candidate["merged_row"])
-#                     merged_count += (
-#                         len(candidate["history"]) - 1
-#                     )  # -1 since I need to account for the fact that I'm keeping one from all of them
-#                 elif do_merge and confidence < 0.9:
-#                     print(
-#                         f"[Info] The model was not confident in its answer! Keeping the original captions!"
-#                     )
-#                     dataset.extend(candidate["history"])
-#                     print(
-#                         f"[INFO] Model not confident enough! Keeping the old captions!"
-#                     )
-#                     print(f"[INFO] Candidates: {candidate}")
-#                 else:
-#                     print(
-#                         f"[INFO] Segments must not be merged! Keeping the old captions!"
-#                     )
-#                     print(f"[INFO] Candidates: {candidate}")
-#                     dataset.extend(candidate["history"])
-
-#             except (json.JSONDecodeError, Exception) as e:
-#                 print(
-#                     f"[ERROR] Failed to parse output for {candidate['video_id']}: {e}"
-#                 )
-#                 print(f"[INFO] Candidates: {candidate}")
-#                 dataset.extend(candidate["history"])
-
-
-# # Write the captions in a file
-# with open(OUTPUT_DATA_PATH, "wb") as f:
-#     pkl.dump(dataset, f)
-
-# total_merged = merged_count + auto_merged_count
-
-# print(f"Original deduplicated dataset size: {dedup_size}")
-# print(f"Number of samples merged by LLM: {merged_count}")
-# print(f"Number of sample auto-merged: {auto_merged_count}")
-# print(f"Total samples merged: {total_merged}")
-
-# print(f"Expected number of samples to be saved: {dedup_size - total_merged}")
-# print(f"Saved {len(dataset)} samples in {OUTPUT_DATA_PATH}")
+    main()
