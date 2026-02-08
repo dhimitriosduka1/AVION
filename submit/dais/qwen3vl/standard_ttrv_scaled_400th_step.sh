@@ -45,4 +45,4 @@ uv run ./second_party/qwen3vl/vllm_refine.py \
     --tensor_parallel_size 4 \
     --output_file /dais/fs/scratch/dduka/databases/ego4d/qwen_refinement/scaled/output_1_caption_ttrv_form_standard_checkpoint_400.jsonl \
     --pkl_path /dais/fs/scratch/dduka/databases/ego4d/random_shift/ego4d_train_random_shift_2.1_2.1_1.0_with_uuid.pkl \
-    --model_path /dais/fs/scratch/dduka/training_metadata/ttrv/checkpoints/TTRL-verl/tag-Qwen/Qwen3-VL-8B-Instruct/TTRL-EGO4D-TAR-STANDARD-SEGMENTS-grpo/global_step_400/actor_merged/
+    --model_path /dais/fs/scratch/dduka/training_metadata/ttrv/checkpoints/TTRL-verl/tag-Qwen/Qwen3-VL-8B-Instruct/TTRL-EGO4D-TAR-ORIGINAL-SEGMENTS-grpo/global_step_400/actor_merged/
