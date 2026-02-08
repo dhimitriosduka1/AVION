@@ -22,9 +22,6 @@ INPUT_DATA_PATH = (
 )
 
 OUTPUT_DIR = "/dais/fs/scratch/dduka/databases/ego4d/shards/"
-SAVE_DIR = "/u/dduka/project/AVION/images"
-
-os.makedirs(SAVE_DIR, exist_ok=True)
 
 # --- PROMPTS ---
 PROMPT_SYSTEM = """You are an expert data curator for **Egocentric Video (First-Person)** datasets.
