@@ -3,8 +3,6 @@ import pickle as pkl
 import json
 import re
 import os
-import networkx as nx
-import matplotlib.pyplot as plt
 from vllm import LLM, SamplingParams
 from collections import defaultdict
 from transformers import AutoTokenizer
@@ -75,38 +73,12 @@ def get_sliding_window_chunks(items, window_size, overlap):
     return chunks
 
 
-def visualize_chunk(chunk_items, clusters, chunk_idx, video_id):
-    plt.figure(figsize=(10, 7))
-    temp_G = nx.Graph()
-    chunk_uuids = [c[0] for c in chunk_items]
-    temp_G.add_nodes_from(chunk_uuids)
-    for cluster in clusters:
-        for i in range(len(cluster) - 1):
-            if cluster[i] in chunk_uuids and cluster[i + 1] in chunk_uuids:
-                temp_G.add_edge(cluster[i], cluster[i + 1])
-    pos = nx.spring_layout(temp_G, k=0.3, seed=42)
-    components = list(nx.connected_components(temp_G))
-    colors = plt.cm.get_cmap("rainbow", len(components))
-    for i, nodes in enumerate(components):
-        nx.draw_networkx_nodes(
-            temp_G, pos, nodelist=list(nodes), node_color=[colors(i)], node_size=300
-        )
-    nx.draw_networkx_edges(temp_G, pos, alpha=0.3)
-    nx.draw_networkx_labels(temp_G, pos, font_size=6)
-    plt.title(f"Video: {video_id} | Chunk: {chunk_idx}")
-    plt.axis("off")
-    plt.savefig(
-        os.path.join(SAVE_DIR, f"graph_{video_id}_chunk_{chunk_idx}.png"), dpi=150
-    )
-    plt.close()
-
-
 def main():
     print(f"Loading data...")
     with open(INPUT_DATA_PATH, "rb") as f:
         dataset = pkl.load(f)
 
-    row_lookup = {row[0]: row for row in dataset}
+    row_lookup = {row[0]: list(row) for row in dataset}
     grouped_by_video = defaultdict(list)
     for row in dataset:
         grouped_by_video[row[1]].append(row)
@@ -121,9 +93,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
 
     all_prompts = []
-    chunk_metadata = []
-
-    for vid, items in grouped_by_video.items():
+    for _, items in grouped_by_video.items():
         items.sort(key=lambda x: x[2])
         chunks = get_sliding_window_chunks(items, WINDOW_SIZE, OVERLAP_SIZE)
         for chunk in chunks:
@@ -142,7 +112,6 @@ def main():
                 add_generation_prompt=True,
             )
             all_prompts.append(prompt)
-            chunk_metadata.append({"vid": vid, "items": chunk})
 
     # For a full run, remove the slicing below
     all_prompts = all_prompts[:2]
@@ -155,48 +124,37 @@ def main():
     )
     outputs = llm.generate(all_prompts, sampling_params)
 
-    G = nx.Graph()
-    G.add_nodes_from(row_lookup.keys())
-
-    print("Processing outputs and building graph...")
+    print("Processing outputs and updating timestamps...")
     for i, output in enumerate(outputs):
         raw_text = output.outputs[0].text
-
-        # 1. Strip thinking blocks
         clean_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL)
-
-        # 2. Extract JSON (Finds the outermost list)
         match = re.search(r"(\[[\s\S]*\])", clean_text)
+
         if match:
             try:
                 clusters = json.loads(match.group(1))
-                if i < 20:
-                    visualize_chunk(
-                        chunk_metadata[i]["items"],
-                        clusters,
-                        i,
-                        chunk_metadata[i]["vid"],
-                    )
-
                 for cluster in clusters:
-                    for j in range(len(cluster) - 1):
-                        u1, u2 = cluster[j], cluster[j + 1]
-                        if u1 in row_lookup and u2 in row_lookup:
-                            G.add_edge(u1, u2)
+                    # Filter valid IDs present in our original dataset
+                    valid_uids = [uid for uid in cluster if uid in row_lookup]
+                    if not valid_uids:
+                        continue
+
+                    # Calculate the union of timestamps for this cluster
+                    u_start = min(row_lookup[uid][2] for uid in valid_uids)
+                    u_end = max(row_lookup[uid][3] for uid in valid_uids)
+
+                    # Update the row_lookup directly
+                    for uid in valid_uids:
+                        row_lookup[uid][2] = u_start
+                        row_lookup[uid][3] = u_end
+                        
             except Exception as e:
                 print(f"JSON error in chunk {i}: {e}")
         else:
             print(f"No valid JSON pattern in chunk {i}")
 
-    print("Reconciling clusters into final dataset...")
-    final_dataset = []
-    for component in nx.connected_components(G):
-        starts = [row_lookup[uid][2] for uid in component]
-        ends = [row_lookup[uid][3] for uid in component]
-        u_start, u_end = min(starts), max(ends)
-        for uid in component:
-            orig = row_lookup[uid]
-            final_dataset.append([uid, orig[1], u_start, u_end, orig[4]])
+    print("Finalizing dataset...")
+    final_dataset = list(row_lookup.values())
 
     print(f"Saving {len(final_dataset)} rows to {OUTPUT_DATA_PATH}...")
     with open(OUTPUT_DATA_PATH, "wb") as f:
