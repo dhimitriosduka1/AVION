@@ -1,22 +1,34 @@
 import torch
 import pickle as pkl
+import json
+import re
 from vllm import LLM, SamplingParams
 from collections import defaultdict
 from transformers import AutoTokenizer
 
+# --- CONFIGURATION ---
 MODEL_ID = "Qwen/Qwen3-32B"
-MAX_MODEL_CONTEXT = 32768 * 4
+MAX_MODEL_CONTEXT = 32768
 GPU_COUNT = torch.cuda.device_count()
+
+# Sliding Window Settings
+WINDOW_SIZE = 80  # Number of captions per LLM call
+OVERLAP_SIZE = 20  # How many captions to repeat in the next chunk
 
 INPUT_DATA_PATH = (
     "/dais/fs/scratch/dduka/databases/ego4d/ego4d_train_deduplicated_with_uuid.pkl"
 )
-
 OUTPUT_DATA_PATH = (
     "/dais/fs/scratch/dduka/databases/ego4d/ego4d_train_timestamp_fixed.pkl"
 )
 
-PROMPT_TEXT = """### TASK: Semantic Grouping & Timestamp Alignment
+# --- PROMPTS ---
+PROMPT_SYSTEM = """You are an expert data curator for **Egocentric Video (First-Person)** datasets.
+Your task is to clean noisy training data where multiple annotators have described the **same atomic action** using slightly different words and slightly offset timestamps.
+
+**Your Goal:** Normalize these into a single temporal event while **preserving all unique text descriptions** as valuable linguistic augmentations."""
+
+PROMPT_USER_TEMPLATE = """### TASK: Semantic Grouping & Timestamp Alignment
 **CONTEXT**: 
 The input contains captions from an egocentric video (camera wearer "#C"). 
 Currently, the data is noisy: the same action (e.g., "#C picks up the cup") is listed multiple times with slight timestamp variations and synonym changes (e.g., "#C takes the cup").
@@ -41,86 +53,81 @@ This hurts training. We need to **merge** these into single events.
    - Do NOT summarize text.
    - Every input caption must appear in the output, but with the **new unified timestamps** of its cluster.
 
-4. **OUTPUT**: Return a valid JSON array of objects.
-
-Output the JSON immediately after in the following format:
+**OUTPUT FORMAT**:
+Return ONLY a JSON array of objects:
 ```json
 [
-    {
-        "start": new_start_time_in_seconds or original_start_time_in_seconds,
-        "end": new_end_time_in_seconds or original_end_time_in_seconds,
-        "caption": "the original caption text"
-    },
-...
+    {{"uuid": "original_uuid", "start": unified_start, "end": unified_end, "caption": "original_text"}},
+    ...
 ]
-```
-"""
+```"""
 
 
-def video_captions_to_message(samples):
-    captions = []
-    for item in samples:
-        start_timestamp = item[1]
-        end_timestamp = item[2]
-        caption_text = item[3]
-        captions.append(f"[{start_timestamp}, {end_timestamp}] {caption_text}")
-    captions_str = "\n".join(captions)
-    prompt = PROMPT_TEXT.replace("{captions_str}", captions_str)
+def get_sliding_window_chunks(items, window_size, overlap):
+    chunks = []
+    if len(items) <= window_size:
+        return [items]
 
-    message = [
-        {
-            "role": "system",
-            "content": (
-                "You are an expert data curator for **Egocentric Video (First-Person)** datasets. "
-                "Your task is to clean noisy training data where multiple annotators have described the **same atomic action** using slightly different words and slightly offset timestamps.\n\n"
-                "**Your Goal:** Normalize these into a single temporal event while **preserving all unique text descriptions** as valuable linguistic augmentations."
-            ),
-        },
-        {"role": "user", "content": prompt},
-    ]
-
-    return message
+    i = 0
+    while i < len(items):
+        chunk = items[i : i + window_size]
+        chunks.append(chunk)
+        i += window_size - overlap
+        if i + overlap >= len(items):
+            break
+    return chunks
 
 
-if __name__ == "__main__":
+def main():
     print(f"Loading data from {INPUT_DATA_PATH}...")
     with open(INPUT_DATA_PATH, "rb") as f:
-        dataset = pkl.load(f)
-    print(f"Loaded {len(dataset)} caption segments.")
+        dataset = pkl.load(f)  # Expected format: [UUID, VIDEO_ID, START, END, CAPTION]
 
-    # Grouping
-    grouped = defaultdict(list)
-    for item in dataset:
-        grouped[item[1]].append(item)
+    # Group by Video ID
+    grouped_by_video = defaultdict(list)
+    for row in dataset:
+        grouped_by_video[row[1]].append(row)
 
-    video_ids = []
-    for vid in grouped:
-        grouped[vid].sort(key=lambda x: x[2])
-        video_ids.append(vid)
-
-    print(f"Initializing {MODEL_ID}...")
+    print(f"Initializing vLLM with {GPU_COUNT} GPUs...")
     llm = LLM(
         model=MODEL_ID,
         tensor_parallel_size=GPU_COUNT,
-        dtype="bfloat16",
-        gpu_memory_utilization=0.96,
-        trust_remote_code=True,
+        gpu_memory_utilization=0.92,
         max_model_len=MAX_MODEL_CONTEXT,
     )
-
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
 
-    video_id = list(grouped.keys())[0]
+    all_prompts = []
+    metadata = []
 
-    message = video_captions_to_message(grouped[video_id])
+    print("Generating overlapping chunks...")
+    for vid, items in grouped_by_video.items():
+        items.sort(key=lambda x: x[2])  # Sort by start time
+        chunks = get_sliding_window_chunks(items, WINDOW_SIZE, OVERLAP_SIZE)
 
-    prompt = tokenizer.apply_chat_template(
-        message,
-        tokenize=False,
-        add_generation_prompt=True,
-        enable_thinking=True,
-    )
+        for chunk in chunks:
+            # Format: [UUID | START | END] CAPTION
+            caps_str = "\n".join([f"[{c[0]} | {c[2]} | {c[3]}] {c[4]}" for c in chunk])
 
+            prompt = tokenizer.apply_chat_template(
+                [
+                    {"role": "system", "content": PROMPT_SYSTEM},
+                    {
+                        "role": "user",
+                        "content": PROMPT_USER_TEMPLATE.format(captions_str=caps_str),
+                    },
+                ],
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=True,
+            )
+
+            all_prompts.append(prompt)
+            metadata.append(vid)
+
+    all_prompts = all_prompts[:2]  # For testing, limit to 2 prompts
+
+    print(f"Executing batch inference ({len(all_prompts)} prompts)...")
     sampling_params = SamplingParams(
         temperature=0.6,
         top_p=0.95,
@@ -128,7 +135,52 @@ if __name__ == "__main__":
         max_tokens=16384,
     )
 
-    outputs = llm.generate([prompt], sampling_params)
-    text = outputs[0].outputs[0].text
+    outputs = llm.generate(all_prompts, sampling_params)
 
-    print(text)
+    temporal_reconciliation = defaultdict(list)
+    uuid_to_static_data = {}
+
+    for i, output in enumerate(outputs):
+        try:
+            raw_text = output.outputs[0].text
+
+            print(f"Raw LLM Output for Video {metadata[i]}:\n{raw_text}\n{'-'*50}")
+
+            json_match = re.search(r"```json\s*(.*?)\s*```", raw_text, re.DOTALL)
+            json_str = json_match.group(1) if json_match else raw_text
+            chunk_results = json.loads(json_str)
+
+            for entry in chunk_results:
+                uid = entry["uuid"]
+                temporal_reconciliation[uid].append(
+                    (float(entry["start"]), float(entry["end"]))
+                )
+                # We update the map (assuming the text/vid_id stays the same as input)
+                if uid not in uuid_to_static_data:
+                    # Search original dataset or use chunk data
+                    uuid_to_static_data[uid] = {
+                        "vid": metadata[i],
+                        "cap": entry["caption"],
+                    }
+        except Exception as e:
+            continue
+
+    # Create Final Dataset: [UUID, VIDEO_ID, START, END, CAPTION]
+    final_dataset = []
+    for uid, times in temporal_reconciliation.items():
+        # Handle overlaps by taking the widest bounds suggested across windows
+        final_start = min(t[0] for t in times)
+        final_end = max(t[1] for t in times)
+
+        static = uuid_to_static_data[uid]
+        final_dataset.append(
+            [uid, static["vid"], final_start, final_end, static["cap"]]
+        )
+
+    print(f"Saving {len(final_dataset)} rows to {OUTPUT_DATA_PATH}...")
+    with open(OUTPUT_DATA_PATH, "wb") as f:
+        pkl.dump(final_dataset, f)
+
+
+if __name__ == "__main__":
+    main()
