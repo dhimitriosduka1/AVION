@@ -16,6 +16,7 @@
 #SBATCH --wait-all-nodes=1
 
 module purge
+module load cuda/12.8
 module load anaconda/3/2023.03
 
 conda activate avion

@@ -8,8 +8,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 
-#SBATCH --gres=gpu:1
-#SBATCH --mem=120000
+#SBATCH --gres=gpu:4
+#SBATCH --mem=480000
 
 #SBATCH --time=00:59:59
 
