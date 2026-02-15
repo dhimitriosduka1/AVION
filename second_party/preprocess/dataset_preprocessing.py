@@ -105,7 +105,7 @@ TASK_TEMPLATE = """\
 ### TASK — Semantic Caption Merging for Contrastive Learning
 
 You are given a chronologically ordered list of caption segments from an \
-egocentric video. Each segment has an **ID**, a **[start – end]** time \
+egocentric video. Each segment has an **ID**, a **[start - end]** time \
 range (seconds), and a **caption** describing what the camera wearer \
 ("#C") is doing.
 
