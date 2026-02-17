@@ -1,196 +1,116 @@
 import torch
 import pickle as pkl
 import json
-import re
-import os
-import argparse
-from vllm import LLM, SamplingParams
 from collections import defaultdict
 from transformers import AutoTokenizer
+from vllm import LLM, SamplingParams
 
-# --- CONFIGURATION ---
-MODEL_ID = "Qwen/Qwen3-32B"
+# --- Configuration ---
+MODEL_ID = "openai/gpt-oss-120b"
 MAX_MODEL_CONTEXT = 32768
 GPU_COUNT = torch.cuda.device_count()
-
-WINDOW_SIZE = 60
-OVERLAP_SIZE = 15
-BATCH_SIZE = 128
 
 INPUT_DATA_PATH = (
     "/dais/fs/scratch/dduka/databases/ego4d/ego4d_train_deduplicated_with_uuid.pkl"
 )
-
+VIDEO_LENGTHS_PATH = "/dais/fs/scratch/dduka/databases/ego4d/video_lengths.json"
 OUTPUT_DIR = "/dais/fs/scratch/dduka/databases/ego4d/shards/"
-SAVE_DIR = "/u/dduka/project/AVION/images"
 
-os.makedirs(SAVE_DIR, exist_ok=True)
+PROMPT_TEMPLATE_PHASE_1 = """
+# Video Metadata
+Total Duration: {video_duration} seconds
+Domain: Egocentric (First-Person Vision)
+Current Segment: {start_time} - {end_time} seconds
+Current Number of Captions: {num_captions}
 
-# --- PROMPTS ---
-PROMPT_SYSTEM = """You are an expert data curator for **Egocentric Video (First-Person)** datasets.
-Your task is to clean noisy training data where multiple annotators have described the **same atomic action** using slightly different words and slightly offset timestamps.
+# Input Segments
+The following is a chronologically sorted list of segments from an egocentric video. 
+Format: [id, start_time, end_time, "caption"]
+{formatted_input_list}
 
-**Your Goal:** Normalize these into a single temporal event while **preserving all unique text descriptions** as valuable linguistic augmentations."""
+# Your Task
+Your task is to process this list of egocentric video segments and group the IDs of segments that describe the exact same **atomic action**. 
 
-PROMPT_USER_TEMPLATE = """### TASK: Semantic Grouping & Timestamp Alignment
-**CONTEXT**: 
-The input contains captions from an egocentric video (camera wearer "#C"). 
-Currently, the data is noisy: the same action (e.g., "#C picks up the cup") is listed multiple times with slight timestamp variations and synonym changes (e.g., "#C takes the cup").
-This hurts training. We need to **merge** these into single events.
+Crucial Context: The captions provided are manually annotated, providing a strong semantic baseline.\n
+However, their start and end timestamps are computed using a heuristic. This combination can result in\n
+artificial temporal overlaps, fragmented boundaries, and concurrent segments describing the same underlying\n
+action using natural human lexical variation (e.g., "chopping tomato" vs. "slicing a red vegetable").
 
-**INPUT CAPTIONS** (Format: [start, end] #C caption):
-{captions_str}
+You must group the segment IDs into discrete clusters, where each cluster represents a single, distinct atomic action.
 
-The captions are sorted by start time, but may have significant overlaps.
+Guidelines and requirements:
+- **Domain Context:** Assume a first-person perspective (the camera wearer). Focus primarily on hand-object interactions.
+- **Semantic & Temporal Clustering:** Evaluate both temporal proximity (overlapping or adjacent heuristic boundaries) and semantic similarity.\n
+Group IDs together if they describe the same underlying action, accommodating for human subjective differences in the annotations.
+- **Lexical Resolution:** Look past superficial lexical differences caused by different annotators describing the same event at the same time.
+- **Completeness and Exclusivity:** Every ID from the input list MUST be included in exactly one cluster. Do not drop any IDs, and do not place\n
+the same ID into multiple clusters. If an ID represents a standalone action that shouldn't be merged, it should be in a cluster by itself (e.g., `[4]`).
+- **Reasoning First:** Think step-by-step. Analyze temporal overlaps and semantic similarities before outputting the final JSON.
 
-### INSTRUCTIONS:
+# Response Format
+Return a valid JSON object strictly adhering to this schema:
 
-1. **IDENTIFY CLUSTERS**: Group captions that describe the **EXACT SAME VISUAL MOMENT**.
-   - **Temporal overlap**: They must overlap significantly or be nearly consecutive.
-   - **Semantic identity**: They must describe the **same atomic interaction** (e.g., "opens fridge" vs "pulls fridge door").
-   - **Ignore Formatting**: Ignore differences in capitalization, punctuation, or "#C " prefix.
+{
+  "type": "object",
+  "properties": {
+    "reasoning": {
+      "type": "string",
+      "description": "A brief, step-by-step explanation of how the IDs were clustered based on heuristic temporal overlap and lexical variation."
+    },
+    "clusters": {
+      "type": "array",
+      "description": "A list of lists. Each inner list contains the integer IDs of the segments that should be merged together.",
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "integer"
+        }
+      }
+    }
+  },
+  "required": ["reasoning", "clusters"]
+}
+"""
 
-2. **COMPUTE UNION**: For each cluster:
-   - `new_start` = Minimum start time of the group.
-   - `new_end` = Maximum end time of the group.
+# Refinement prompt, sources from the ACION100M paper
+PROMPT_TEMPLATE_PHASE_2 = """Now, carefully analyze, verify, and revise the previous draft so that it is fully accurate, faithful to the provided
+content, and strictly adheres to all stated guidelines and requirements."""
 
-3. **PRESERVE TEXT**: 
-   - Do NOT delete any captions. 
-   - Do NOT summarize text.
-   - Every input caption must appear in the output, but with the **new unified timestamps** of its cluster.
+if __name__ == "__main__":
+    print(f"Model ID: {MODEL_ID}")
+    print(f"Max Model Context: {MAX_MODEL_CONTEXT}")
+    print(f"GPU Count: {GPU_COUNT}")
+    print(f"Input Data Path: {INPUT_DATA_PATH}")
+    print(f"Output Directory: {OUTPUT_DIR}")
+    print(f"Video Lengths Path: {VIDEO_LENGTHS_PATH}")
+    print(f"Prompt Template Phase 1: {PROMPT_TEMPLATE_PHASE_1}")
+    print(f"Prompt Template Phase 2: {PROMPT_TEMPLATE_PHASE_2}")
 
-**OUTPUT FORMAT**:
-[["uuid_1", "uuid_2"], ["uuid_3"]]"""
+    # A dictionary mapping video_id to its duration in seconds
+    with open(VIDEO_LENGTHS_PATH, "r") as f:
+        video_lengths = json.load(f)
 
-
-def get_sliding_window_chunks(items, window_size, overlap):
-    chunks = []
-    i = 0
-    while i < len(items):
-        chunks.append(items[i : i + window_size])
-        if i + window_size >= len(items):
-            break
-        i += window_size - overlap
-    return chunks
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--job_idx", type=int, default=0, help="Index of the current job"
-    )
-    parser.add_argument(
-        "--num_jobs", type=int, default=1, help="Total number of jobs in array"
-    )
-    args = parser.parse_args()
-
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-    print(f"Loading data...")
     with open(INPUT_DATA_PATH, "rb") as f:
         dataset = pkl.load(f)
 
-    # Group by video
     grouped_by_video = defaultdict(list)
     for row in dataset:
         grouped_by_video[row[1]].append(row)
 
-    # Sort video IDs to ensure consistency across all parallel jobs
-    all_video_ids = sorted(list(grouped_by_video.keys()))
+    print(f"Total videos: {len(grouped_by_video)}")
 
-    # --- SUBSET LOGIC FOR JOB ARRAY ---
-    # Divide the video list into N chunks
-    chunk_size = (len(all_video_ids) + args.num_jobs - 1) // args.num_jobs
-    start_idx = args.job_idx * chunk_size
-    end_idx = min(start_idx + chunk_size, len(all_video_ids))
-
-    my_video_ids = all_video_ids[start_idx:end_idx]
-    print(f"Job {args.job_idx}/{args.num_jobs}: Processing {len(my_video_ids)} videos.")
-
-    # Only keep data for videos assigned to this job
-    row_lookup = {
-        row[0]: list(row) for vid in my_video_ids for row in grouped_by_video[vid]
-    }
-
-    print(f"Initializing vLLM...")
     llm = LLM(
         model=MODEL_ID,
         tensor_parallel_size=GPU_COUNT,
+        enable_prefix_caching=True,
         gpu_memory_utilization=0.90,
         max_model_len=MAX_MODEL_CONTEXT,
+        trust_remote_code=True,
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
 
+    sampling_initial = SamplingParams(temperature=0.0, max_tokens=4096)
+    sampling_refine = SamplingParams(temperature=0.1, max_tokens=4096)
+
+    # Maybe later on I can add the sharding logic here, but for now let's just do one video to test the pipeline
     all_prompts = []
-    for vid in my_video_ids:
-        items = grouped_by_video[vid]
-        items.sort(key=lambda x: x[2])  # Sort by start time
-        chunks = get_sliding_window_chunks(items, WINDOW_SIZE, OVERLAP_SIZE)
-        for chunk in chunks:
-            caps_str = "\n".join(
-                [f"ID: {c[0]} | [{c[2]}-{c[3]}] | {c[4]}" for c in chunk]
-            )
-            prompt = tokenizer.apply_chat_template(
-                [
-                    {"role": "system", "content": PROMPT_SYSTEM},
-                    {
-                        "role": "user",
-                        "content": PROMPT_USER_TEMPLATE.format(captions_str=caps_str),
-                    },
-                ],
-                tokenize=False,
-                add_generation_prompt=True,
-                enable_thinking=True,
-            )
-            all_prompts.append(prompt)
-
-    sampling_params = SamplingParams(
-        temperature=0.6,
-        top_p=0.95,
-        top_k=20,
-        max_tokens=16384,
-    )
-
-    print(f"Generating for {len(all_prompts)} total windows...")
-    for i in range(0, len(all_prompts), BATCH_SIZE):
-        batch = all_prompts[i : i + BATCH_SIZE]
-        outputs = llm.generate(batch, sampling_params, use_tqdm=True)
-
-        print(f"Batch: {batch}")
-
-        for output in outputs:
-            raw_text = output.outputs[0].text
-            clean_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL)
-            match = re.search(r"(\[[\s\S]*\])", clean_text)
-
-            print(f"Raw text: {raw_text}")
-            print(f"Match: {match}")
-
-            if match:
-                try:
-                    clusters = json.loads(match.group(1))
-                    for cluster in clusters:
-                        valid_uids = [uid for uid in cluster if uid in row_lookup]
-                        if not valid_uids:
-                            continue
-
-                        u_start = min(row_lookup[uid][2] for uid in valid_uids)
-                        u_end = max(row_lookup[uid][3] for uid in valid_uids)
-
-                        for uid in valid_uids:
-                            row_lookup[uid][2] = u_start
-                            row_lookup[uid][3] = u_end
-                except:
-                    continue
-
-    # Save specific shard
-    shard_path = os.path.join(OUTPUT_DIR, f"shard_{args.job_idx}.pkl")
-    final_dataset = list(row_lookup.values())
-    with open(shard_path, "wb") as f:
-        pkl.dump(final_dataset, f)
-
-    print(f"Shard {args.job_idx} saved with {len(final_dataset)} rows.")
-
-
-if __name__ == "__main__":
-    main()
