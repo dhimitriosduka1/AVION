@@ -14,7 +14,7 @@
 
 #SBATCH --time=23:59:59
 
-#SBATCH --array=0-40%10
+#SBATCH --array=0-40
 
 cd /u/dduka/work/projects/Thesis/AVION/
 

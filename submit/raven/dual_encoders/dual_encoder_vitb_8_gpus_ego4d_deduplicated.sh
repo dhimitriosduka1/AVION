@@ -1,9 +1,9 @@
 #!/bin/bash -l
 
-#SBATCH -o /ptmp/dduka/work/logs/avion/lavila_pretrain_baseline_de_%A_%a_%x_%j_%N.out
-#SBATCH -e /ptmp/dduka/work/logs/avion/lavila_pretrain_baseline_de_%A_%a_%x_%j_%N.err
+#SBATCH -o /ptmp/dduka/work/logs/avion/dual_encoder_deduplicated_%A_%a_%x_%j_%N.out
+#SBATCH -e /ptmp/dduka/work/logs/avion/dual_encoder_deduplicated_%A_%a_%x_%j_%N.err
 
-#SBATCH --job-name dual_encoder_pretrain_baseline_8_gpus_train_loader_shuffle
+#SBATCH --job-name dual_encoder_deduplicated
 
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
@@ -12,10 +12,11 @@
 #SBATCH --constraint="gpu"
 #SBATCH --cpus-per-task=72
 
-#SBATCH --time=23:59:59
+#SBATCH --time=15:59:59
 #SBATCH --wait-all-nodes=1
 
 module purge
+module load cuda/12.8
 module load anaconda/3/2023.03
 
 conda activate avion
@@ -34,7 +35,7 @@ echo "GPUs per node: $SLURM_GPUS_ON_NODE"
 
 cd /u/dduka/work/projects/Thesis/AVION
 
-RUN_NAME=DUAL_ENCODER_PRETRAIN_BASELINE_256_TRAIN_LOADER_SHUFFLE
+RUN_NAME=DUAL_ENCODER_EGO4D_DEDUPLICATED
 EXP_PATH=/ptmp/dduka/work/training_metadata/avion/$RUN_NAME
 
 mkdir -p $EXP_PATH
@@ -57,3 +58,4 @@ srun --cpu_bind=v --accel-bind=gn torchrun \
     --fix-lr \
     --output-dir $EXP_PATH \
     --wandb-run-name $RUN_NAME \
+    --train-metadata /ptmp/dduka/databases/ego4d/ego4d_train_deduplicated.pkl \
