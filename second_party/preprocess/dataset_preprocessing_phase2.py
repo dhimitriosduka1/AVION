@@ -1,7 +1,9 @@
+import json
 import torch
 import pickle as pkl
 from collections import defaultdict
 import torch.nn.functional as F
+from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
 MODEL_ID = "Qwen/Qwen3-Embedding-8B"
@@ -57,7 +59,9 @@ if __name__ == "__main__":
     # Load the model
     model, tokenizer, device = load_model_and_tokenizer(MODEL_ID)
 
-    for video_id, segments in grouped_by_video.items():
+    uuids_to_merge = []
+
+    for video_id, segments in tqdm(grouped_by_video.items(), desc="Processing videos"):
         for i in range(len(segments) - 1):
             current_segment = segments[i]
             next_segment = segments[i + 1]
@@ -66,13 +70,9 @@ if __name__ == "__main__":
             next_caption = next_segment[4]
 
             if current_caption == next_caption:
-                # FIXME
                 continue
 
-            if next_segment[2] < current_segment[3]:
-                print(f"Overlapping segments detected in video {video_id}:")
-                print(f"Segment {i}: {current_segment}")
-                print(f"Segment {i+1}: {next_segment}")
+            if next_segment[2] <= current_segment[3]:
                 input_texts = [
                     get_detailed_instruct(TASK, current_caption),
                     get_detailed_instruct(TASK, next_caption),
@@ -99,8 +99,12 @@ if __name__ == "__main__":
                 )
 
                 if similarity > 0.9:
-                    print(
-                        "Segments are likely describing the same action. Consider merging."
-                    )
+                    uuids_to_merge.append((current_segment[0], next_segment[0]))
 
-        break
+    print(f"Total pairs to merge: {len(uuids_to_merge)}")
+
+    with open(
+        "/u/dduka/project/AVION/second_party/preprocess/uuids_to_merge_phase_2.json",
+        "w",
+    ) as f:
+        json.dump(uuids_to_merge, f, indent=4)
