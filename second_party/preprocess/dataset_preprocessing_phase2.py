@@ -6,6 +6,8 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
+# NOTE: In case I need to run this script again, I need to optimize it!
+
 MODEL_ID = "Qwen/Qwen3-Embedding-8B"
 INPUT_DATA_PATH = (
     "/dais/fs/scratch/dduka/databases/ego4d/ego4d_train_deduplicated_with_uuid.pkl"
@@ -104,7 +106,7 @@ if __name__ == "__main__":
     print(f"Total pairs to merge: {len(uuids_to_merge)}")
 
     with open(
-        "/u/dduka/project/AVION/second_party/preprocess/uuids_to_merge_phase_2.json",
+        "/u/dduka/project/AVION/second_party/preprocess/data/uuids_to_merge_phase_2.json",
         "w",
     ) as f:
         json.dump(uuids_to_merge, f, indent=4)
