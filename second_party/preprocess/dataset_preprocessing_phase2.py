@@ -1,193 +1,112 @@
+import json
 import torch
 import pickle as pkl
-import json
-import re
-import os
-import argparse
-from vllm import LLM, SamplingParams
 from collections import defaultdict
-from transformers import AutoTokenizer
+import torch.nn.functional as F
+from tqdm import tqdm
+from transformers import AutoModel, AutoTokenizer
 
-# --- CONFIGURATION ---
-MODEL_ID = "Qwen/Qwen3-32B"
-MAX_MODEL_CONTEXT = 32768
-GPU_COUNT = torch.cuda.device_count()
+# NOTE: In case I need to run this script again, I need to optimize it!
 
-WINDOW_SIZE = 60
-OVERLAP_SIZE = 15
-BATCH_SIZE = 128
-
+MODEL_ID = "Qwen/Qwen3-Embedding-8B"
 INPUT_DATA_PATH = (
     "/dais/fs/scratch/dduka/databases/ego4d/ego4d_train_deduplicated_with_uuid.pkl"
 )
-
-OUTPUT_DIR = "/dais/fs/scratch/dduka/databases/ego4d/shards/"
-
-# --- PROMPTS ---
-PROMPT_SYSTEM = """You are an expert data curator for **Egocentric Video (First-Person)** datasets.
-Your task is to clean noisy training data where multiple annotators have described the **same atomic action** using slightly different words and slightly offset timestamps.
-
-**Your Goal:** Normalize these into a single temporal event while **preserving all unique text descriptions** as valuable linguistic augmentations."""
-
-PROMPT_USER_TEMPLATE = """### TASK: Semantic Grouping & Timestamp Alignment
-**CONTEXT**: 
-The input contains captions from an egocentric video (camera wearer "#C"). 
-Currently, the data is noisy: the same action (e.g., "#C picks up the cup") is listed multiple times with slight timestamp variations and synonym changes (e.g., "#C takes the cup").
-This hurts training. We need to **merge** these into single events.
-
-**INPUT CAPTIONS** (Format: [start, end] #C caption):
-{captions_str}
-
-The captions are sorted by start time, but may have significant overlaps.
-
-### INSTRUCTIONS:
-
-1. **IDENTIFY CLUSTERS**: Group captions that describe the **EXACT SAME VISUAL MOMENT**.
-   - **Temporal overlap**: They must overlap significantly or be nearly consecutive.
-   - **Semantic identity**: They must describe the **same atomic interaction** (e.g., "opens fridge" vs "pulls fridge door").
-   - **Ignore Formatting**: Ignore differences in capitalization, punctuation, or "#C " prefix.
-
-2. **COMPUTE UNION**: For each cluster:
-   - `new_start` = Minimum start time of the group.
-   - `new_end` = Maximum end time of the group.
-
-3. **PRESERVE TEXT**: 
-   - Do NOT delete any captions. 
-   - Do NOT summarize text.
-   - Every input caption must appear in the output, but with the **new unified timestamps** of its cluster.
-
-**OUTPUT FORMAT**:
-[["uuid_1", "uuid_2"], ["uuid_3"]]"""
+TASK = "Identify the underlying action in this sentence for the purpose of grouping identical events."
 
 
-def get_sliding_window_chunks(items, window_size, overlap):
-    chunks = []
-    i = 0
-    while i < len(items):
-        chunks.append(items[i : i + window_size])
-        if i + window_size >= len(items):
-            break
-        i += window_size - overlap
-    return chunks
+def last_token_pool(last_hidden_states, attention_mask):
+    left_padding = attention_mask[:, -1].sum() == attention_mask.shape[0]
+    if left_padding:
+        return last_hidden_states[:, -1]
+    else:
+        sequence_lengths = attention_mask.sum(dim=1) - 1
+        batch_size = last_hidden_states.shape[0]
+        return last_hidden_states[
+            torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths
+        ]
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--job_idx", type=int, default=0, help="Index of the current job"
-    )
-    parser.add_argument(
-        "--num_jobs", type=int, default=1, help="Total number of jobs in array"
-    )
-    args = parser.parse_args()
+def load_model_and_tokenizer(model_id):
+    tokenizer = AutoTokenizer.from_pretrained(model_id, padding_side="left")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
 
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    model = AutoModel.from_pretrained(model_id, torch_dtype=torch.bfloat16).to(device)
+    model.eval()
 
-    print(f"Loading data...")
+    return model, tokenizer, device
+
+
+def get_detailed_instruct(task_description, query):
+    return f"Instruct: {task_description}\nQuery:{query}"
+
+
+if __name__ == "__main__":
     with open(INPUT_DATA_PATH, "rb") as f:
         dataset = pkl.load(f)
 
-    # Group by video
+    # Grouping
     grouped_by_video = defaultdict(list)
     for row in dataset:
         grouped_by_video[row[1]].append(row)
 
-    # Sort video IDs to ensure consistency across all parallel jobs
-    all_video_ids = sorted(list(grouped_by_video.keys()))
+    # Sort segments by start time
+    for video_id in grouped_by_video:
+        # Each entry is constructed as [uuid, video_id, start_time, end_time, caption]
+        grouped_by_video[video_id] = sorted(
+            grouped_by_video[video_id], key=lambda x: x[2]
+        )
 
-    # --- SUBSET LOGIC FOR JOB ARRAY ---
-    # Divide the video list into N chunks
-    chunk_size = (len(all_video_ids) + args.num_jobs - 1) // args.num_jobs
-    start_idx = args.job_idx * chunk_size
-    end_idx = min(start_idx + chunk_size, len(all_video_ids))
+    # Load the model
+    model, tokenizer, device = load_model_and_tokenizer(MODEL_ID)
 
-    my_video_ids = all_video_ids[start_idx:end_idx]
-    print(f"Job {args.job_idx}/{args.num_jobs}: Processing {len(my_video_ids)} videos.")
+    uuids_to_merge = []
 
-    # Only keep data for videos assigned to this job
-    row_lookup = {
-        row[0]: list(row) for vid in my_video_ids for row in grouped_by_video[vid]
-    }
+    for video_id, segments in tqdm(grouped_by_video.items(), desc="Processing videos"):
+        for i in range(len(segments) - 1):
+            current_segment = segments[i]
+            next_segment = segments[i + 1]
 
-    print(f"Initializing vLLM...")
-    llm = LLM(
-        model=MODEL_ID,
-        tensor_parallel_size=GPU_COUNT,
-        gpu_memory_utilization=0.90,
-        max_model_len=MAX_MODEL_CONTEXT,
-    )
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+            current_caption = current_segment[4]
+            next_caption = next_segment[4]
 
-    all_prompts = []
-    for vid in my_video_ids:
-        items = grouped_by_video[vid]
-        items.sort(key=lambda x: x[2])  # Sort by start time
-        chunks = get_sliding_window_chunks(items, WINDOW_SIZE, OVERLAP_SIZE)
-        for chunk in chunks:
-            caps_str = "\n".join(
-                [f"ID: {c[0]} | [{c[2]}-{c[3]}] | {c[4]}" for c in chunk]
-            )
-            prompt = tokenizer.apply_chat_template(
-                [
-                    {"role": "system", "content": PROMPT_SYSTEM},
-                    {
-                        "role": "user",
-                        "content": PROMPT_USER_TEMPLATE.format(captions_str=caps_str),
-                    },
-                ],
-                tokenize=False,
-                add_generation_prompt=True,
-                enable_thinking=True,
-            )
-            all_prompts.append(prompt)
+            if current_caption == next_caption:
+                continue
 
-    sampling_params = SamplingParams(
-        temperature=0.6,
-        top_p=0.95,
-        top_k=20,
-        max_tokens=16384,
-    )
+            if next_segment[2] <= current_segment[3]:
+                input_texts = [
+                    get_detailed_instruct(TASK, current_caption),
+                    get_detailed_instruct(TASK, next_caption),
+                ]
 
-    print(f"Generating for {len(all_prompts)} total windows...")
-    for i in range(0, len(all_prompts), BATCH_SIZE):
-        batch = all_prompts[i : i + BATCH_SIZE]
-        outputs = llm.generate(batch, sampling_params, use_tqdm=True)
+                batch = tokenizer(
+                    input_texts,
+                    padding=True,
+                    truncation=True,
+                    max_length=512,
+                    return_tensors="pt",
+                ).to(device)
 
-        print(f"Batch: {batch}")
+                with torch.inference_mode():
+                    outputs = model(**batch)
+                    emb = last_token_pool(
+                        outputs.last_hidden_state, batch["attention_mask"]
+                    )
+                    emb = F.normalize(emb, p=2, dim=1)
 
-        for output in outputs:
-            raw_text = output.outputs[0].text
-            clean_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL)
-            match = re.search(r"(\[[\s\S]*\])", clean_text)
+                similarity = (emb[0] @ emb[1]).item()
+                print(
+                    f"Similarity: {similarity:.4f} | Pair: ('{current_caption}', '{next_caption}')"
+                )
 
-            print(f"Raw text: {raw_text}")
-            print(f"Match: {match}")
+                if similarity > 0.9:
+                    uuids_to_merge.append((current_segment[0], next_segment[0]))
 
-            if match:
-                try:
-                    clusters = json.loads(match.group(1))
-                    for cluster in clusters:
-                        valid_uids = [uid for uid in cluster if uid in row_lookup]
-                        if not valid_uids:
-                            continue
+    print(f"Total pairs to merge: {len(uuids_to_merge)}")
 
-                        u_start = min(row_lookup[uid][2] for uid in valid_uids)
-                        u_end = max(row_lookup[uid][3] for uid in valid_uids)
-
-                        for uid in valid_uids:
-                            row_lookup[uid][2] = u_start
-                            row_lookup[uid][3] = u_end
-                except:
-                    continue
-
-    # Save specific shard
-    shard_path = os.path.join(OUTPUT_DIR, f"shard_{args.job_idx}.pkl")
-    final_dataset = list(row_lookup.values())
-    with open(shard_path, "wb") as f:
-        pkl.dump(final_dataset, f)
-
-    print(f"Shard {args.job_idx} saved with {len(final_dataset)} rows.")
-
-
-if __name__ == "__main__":
-    main()
+    with open(
+        "/u/dduka/project/AVION/second_party/preprocess/data/uuids_to_merge_phase_2.json",
+        "w",
+    ) as f:
+        json.dump(uuids_to_merge, f, indent=4)

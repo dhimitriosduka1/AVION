@@ -4,7 +4,7 @@
 #SBATCH -e /dais/fs/scratch/dduka/logs/avion/dual_encoder_1_caption_%N.err
 
 #SBATCH -J de_one_caption_ttrv_standard_standard_400_step
-#SBATCH --time=14:59:59
+#SBATCH --time=23:59:59
 
 #SBATCH --nodes=1
 #SBATCH --partition="gpu1"
