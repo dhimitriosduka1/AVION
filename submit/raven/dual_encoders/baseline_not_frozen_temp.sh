@@ -1,0 +1,55 @@
+#!/bin/bash -l
+
+#SBATCH -o /ptmp/dduka/work/logs/avion/dual_encoder_baseline_no_frozen_temp_%A_%a_%x_%j_%N.out
+#SBATCH -e /ptmp/dduka/work/logs/avion/dual_encoder_baseline_no_frozen_temp_%A_%a_%x_%j_%N.err
+
+#SBATCH --job-name de_no_frozen_temp
+
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+
+#SBATCH --gres=gpu:4
+#SBATCH --constraint="gpu"
+#SBATCH --cpus-per-task=72
+
+#SBATCH --time=23:59:59
+
+module purge
+module load anaconda/3/2023.03
+
+conda activate avion
+
+export MASTER_PORT=$((12000 + $RANDOM % 20000))
+export MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
+
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+
+echo "Job running on nodes: $SLURM_JOB_NODELIST"
+echo "Total nodes: $SLURM_NNODES" 
+echo "GPUs per node: $SLURM_GPUS_ON_NODE"
+
+cd /u/dduka/work/projects/Thesis/AVION
+
+RUN_NAME=RAVEN_DE_NO_FROZEN_TEMP
+EXP_PATH=/ptmp/dduka/work/training_metadata/avion/$RUN_NAME
+
+mkdir -p $EXP_PATH
+
+export PYTHONPATH=.:third_party/decord/python/
+    
+srun --cpu_bind=v --accel-bind=gn torchrun \
+    --nproc_per_node=4 \
+    --nnodes=$SLURM_NNODES \
+    --node_rank=$SLURM_NODEID \
+    --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
+    --rdzv_backend=c10d \
+    scripts/main_lavila_pretrain.py \
+    --use-flash-attn \
+    --grad-checkpointing \
+    --use-fast-conv1 \
+    --batch-size 512 \
+    --no-freeze-temperature \
+    --fused-decode-crop \
+    --fix-lr \
+    --output-dir $EXP_PATH \
+    --wandb-run-name $RUN_NAME \
