@@ -413,7 +413,7 @@ class VideoCaptionDatasetBase(torch.utils.data.Dataset):
                     pass
                 else:
                     raise ValueError
-            return frames, narration
+            return frames, narration, end_second - start_second
         elif self.dataset == "ego4d_mcq":
             itemMCQ = self.samples[str(i)]
             answerIndex = itemMCQ["answer"]
@@ -700,6 +700,9 @@ class VideoCaptionDatasetCLIP(VideoCaptionDatasetBase):
             rcc_params=self.rcc_params,
         )
 
+        _, start_second, end_second, __ = self.samples[i][:4]
+        clip_length = end_second - start_second
+
         # ek100_mir will also output relevancy value
         if isinstance(caption, tuple):
             caption, relevancy = caption
@@ -718,7 +721,8 @@ class VideoCaptionDatasetCLIP(VideoCaptionDatasetBase):
             caption, mask = caption
             return frames, caption, mask, relevancy
         else:
-            return frames, caption, relevancy
+            return frames, caption, clip_length, relevancy
+
 
 
 class VideoClassyDataset(VideoCaptionDatasetBase):

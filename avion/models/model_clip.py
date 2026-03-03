@@ -38,6 +38,11 @@ class VideoClassifier(nn.Module):
         return logit
 
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+
 class CLIP(nn.Module):
     def __init__(
         self,
@@ -47,6 +52,11 @@ class CLIP(nn.Module):
         vision_width: int = None,
         text_width: int = None,
         freeze_temperature=False,
+        tau_min=0.04,
+        tau_max=0.12,
+        anchor_span=1.0,
+        alpha=0.25,
+        enable_temperature_modulation=True,
         **kwargs,
     ):
         super().__init__()
@@ -55,8 +65,9 @@ class CLIP(nn.Module):
         self.textual = text_model
 
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-        if freeze_temperature:
+        if freeze_temperature or enable_temperature_modulation:
             self.logit_scale.requires_grad_(False)
+
         if vision_width is not None:
             self.vision_width = vision_width
             self.image_projection = nn.Parameter(torch.empty(vision_width, embed_dim))
@@ -65,39 +76,32 @@ class CLIP(nn.Module):
         if text_width is not None:
             self.text_width = text_width
             self.text_projection = nn.Parameter(torch.empty(text_width, embed_dim))
-        else:
-            self.text_projection = None
+
+        self.enable_temperature_modulation = enable_temperature_modulation
+        self.tau_min = tau_min
+        self.tau_max = tau_max
+        self.anchor_span = anchor_span
+        self.alpha = alpha
 
         self.init_parameters()
 
-    def init_parameters(self):
-        if self.image_projection is not None:
-            trunc_normal_(self.image_projection, std=self.vision_width**-0.5)
-        if self.text_projection is not None:
-            trunc_normal_(self.text_projection, std=self.text_width**-0.5)
+    def compute_per_pair_logit_scale(self, clip_length):
+        factor = torch.pow(clip_length / self.anchor_span, self.alpha)
+        modulated_tau = self.base_temperature * factor
+        
+        modulated_tau = torch.clamp(modulated_tau, self.tau_min, self.tau_max)
+        return 1.0 / modulated_tau
 
-    def encode_image(self, image):
-        x = self.visual(image)
-        if self.image_projection is not None:
-            x = x @ self.image_projection.to(x.dtype)
-        return x
+    def forward(self, image, text, clip_length=None):
+        image_embed = F.normalize(self.encode_image(image), dim=-1)
+        text_embed = F.normalize(self.encode_text(text), dim=-1)
 
-    def encode_text(self, text, cast_dtype=None):
-        x = self.textual(text, cast_dtype=cast_dtype)
-        if self.text_projection is not None:
-            x = x @ self.text_projection.to(x.dtype)
-        return x
+        if self.enable_temperature_modulation and clip_length is not None:
+            logit_scale = self.compute_per_pair_logit_scale(clip_length)
+        else:
+            logit_scale = self.logit_scale.exp()
 
-    def forward(self, image, text):
-        image_embed = self.encode_image(image)
-        text_embed = self.encode_text(text, cast_dtype=image_embed.dtype)
-
-        return (
-            F.normalize(image_embed, dim=-1),
-            F.normalize(text_embed, dim=-1),
-            self.logit_scale.exp(),
-        )
-
+        return image_embed, text_embed, logit_scale
 
 def CLIP_VITB16(
     freeze_temperature=False,

@@ -15,7 +15,7 @@ from avion.data.clip_dataset import VideoCaptionDatasetCLIP
 from avion.data.tokenizer import tokenize
 from avion.data.transforms import Permute
 
-from avion.losses.losses import ClipLoss
+from avion.losses.losses import ClipLoss, ClipLossWithModulatedTemperature
 import avion.models.model_clip as model_clip
 from avion.optim.schedulers import cosine_scheduler
 import avion.utils.distributed as dist_utils
@@ -243,6 +243,18 @@ def get_args_parser():
         "--prefetch-factor", default=4, type=int, help="Number of batches to prefetch"
     )
 
+    # For temperature modulation
+    parser.add_argument(
+        "--enable-temperature-modulation",
+        action="store_true",
+        help="If true, will compute and apply per-pair logit scales based on clip length",
+    )
+
+    parser.add_argument("--tau-min", default=0.04, type=float, help="Minimum temperature for modulation")
+    parser.add_argument("--tau-max", default=0.12, type=float, help="Maximum temperature for modulation")
+    parser.add_argument("--anchor-span", default=1.0, type=int, help="Anchor span for temperature modulation")
+    parser.add_argument("--alpha", default=0.25, type=float, help="Alpha for temperature modulation")
+
     return parser
 
 
@@ -255,7 +267,7 @@ def main(args):
         wandb.init(
             project=args.wandb_project_name,
             name=args.wandb_run_name,
-            id=args.wandb_run_name,
+            id=args.prewandb_run_name,
             tags=[],
             resume="allow",
             config=vars(args),
@@ -276,6 +288,11 @@ def main(args):
         project_embed_dim=args.project_embed_dim,
         pretrain_zoo=args.pretrain_zoo,
         pretrain_path=args.pretrain_path,
+        enable_temperature_modulation=args.enable_temperature_modulation,
+        tau_min=args.tau_min,
+        tau_max=args.tau_max,
+        anchor_span=args.anchor_span,
+        alpha=args.alpha,
     )
 
     model.cuda(args.gpu)
@@ -292,6 +309,16 @@ def main(args):
         rank=args.rank,
         world_size=args.world_size,
     ).cuda(args.gpu)
+
+    if args.enable_temperature_modulation:
+        print(f"Overriding the criterion with ClipLossWithModulatedTemperature for temperature modulation")
+        criterion = ClipLossWithModulatedTemperature(
+            local_loss=args.local_loss,
+            gather_with_grad=args.gather_with_grad,
+            cache_labels=True,
+            rank=args.rank,
+            world_size=args.world_size
+        ).cuda(args.gpu)
 
     n_wd, n_non_wd = [], []
     p_wd, p_non_wd = [], []
@@ -769,6 +796,10 @@ def train(
     model_time = AverageMeter("Model", ":6.2f")
     mem = AverageMeter("Mem (GB)", ":6.1f")
     metric_names = ["loss", "clip_acc"]
+
+    if args.enable_temperature_modulation:
+        metric_names += ["logit_scale", "logit_scale_min", "logit_scale_max"]
+
     iters_per_epoch = len(train_loader) // args.update_freq
     metrics = OrderedDict([(name, AverageMeter(name, ":.2e")) for name in metric_names])
     progress = ProgressMeter(
@@ -819,6 +850,7 @@ def train(
                 loss_dict = criterion(image_features, text_features, logit_scale)
                 loss = loss_dict["loss"]
         else:
+            # NOTE: The temperature modulation logic does not work in this branch
             # First, cache the features without any gradient tracking.
             with torch.no_grad():
                 with amp.autocast(enabled=not args.disable_amp):
@@ -892,13 +924,19 @@ def train(
         if optim_iter % args.print_freq == 0:
             progress.display(optim_iter)
 
+        metrics_dict = {
+            "loss": loss.item(),
+            "lr": optimizer.param_groups[0]["lr"],
+            "logit_scale": logit_scale,
+        }
+
+        if args.enable_temperature_modulation:
+            metrics_dict["logit_scale_min"] = loss_dict["logit_scale_min"]
+            metrics_dict["logit_scale_max"] = loss_dict["logit_scale_max"]
+
         if dist_utils.is_main_process():
             wandb.log(
-                data={
-                    "loss": loss.item(),
-                    "lr": optimizer.param_groups[0]["lr"],
-                    "logit_scale": logit_scale,
-                },
+                data=metrics_dict,
                 step=it,
             )
 
