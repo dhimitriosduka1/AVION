@@ -1,4 +1,8 @@
 import argparse
+try:
+    import wandb
+except ImportError:
+    wandb = None
 from collections import OrderedDict
 from functools import partial
 import json
@@ -235,12 +239,30 @@ def get_args_parser():
     parser.add_argument("--dist-backend", default="nccl", type=str)
     parser.add_argument("--seed", default=0, type=int)
     parser.add_argument("--gpu", default=None, type=int, help="GPU id to use.")
+    # wandb
+    parser.add_argument("--wandb", action="store_true", help="enable wandb logging")
+    parser.add_argument("--wandb-entity", default=None, type=str, help="wandb entity (team or user)")
+    parser.add_argument("--wandb-run-name", default=None, type=str, help="wandb run name")
     return parser
 
 
 def main(args):
     dist_utils.init_distributed_mode(args)
     dist_utils.random_seed(args.seed, dist_utils.get_rank())
+
+    # --- wandb init (rank 0 only) ---
+    if args.wandb and dist_utils.is_main_process():
+        if wandb is None:
+            raise ImportError("wandb is not installed. Install it with: pip install wandb")
+        wandb.init(
+            project=args.wandb_project,
+            name=args.wandb_run_name,
+            id=args.wandb_run_name,
+            tags=[],
+            resume="allow",
+            config=vars(args),
+            dir="/ptmp/dduka/work/logs/avion/"
+        )
 
     if args.pretrain_model:
         ckpt_path = args.pretrain_model
@@ -625,6 +647,14 @@ def main(args):
             with open(os.path.join(args.output_dir, "log.txt"), "a") as f:
                 f.write(json.dumps(log_stats) + "\n")
 
+        # --- wandb: log epoch-level summary ---
+        if args.wandb and dist_utils.is_main_process():
+            wandb.log({"epoch": epoch, **log_stats, "best_acc1": best_acc1})
+
+    # --- wandb: finish ---
+    if args.wandb and dist_utils.is_main_process():
+        wandb.finish()
+
 
 def train(
     train_loader,
@@ -746,6 +776,25 @@ def train(
 
         if optim_iter % args.print_freq == 0:
             progress.display(optim_iter)
+
+        # --- wandb: log training step metrics ---
+        if args.wandb and dist_utils.is_main_process() and optim_iter % args.print_freq == 0:
+            step = iters_per_epoch * epoch + optim_iter
+            wandb_log = {
+                "train/loss": losses.val,
+                "train/acc1": metrics["Acc@1"].val,
+                "train/acc5": metrics["Acc@5"].val,
+                "train/lr": optimizer.param_groups[0]["lr"],
+                "train/batch_time": batch_time.val,
+                "train/data_time": data_time.val,
+                "train/gpu_mem_gb": mem.val,
+                "global_step": step,
+            }
+            if args.dataset == "ek100_cls":
+                wandb_log["train/verb_acc1"] = metrics["Verb Acc@1"].val
+                wandb_log["train/noun_acc1"] = metrics["Noun Acc@1"].val
+            wandb.log(wandb_log)
+
     progress.synchronize()
     return {
         **{k: v.avg for k, v in metrics.items()},
@@ -885,11 +934,21 @@ def validate(val_loader, transform_gpu, model, args, num_videos):
             cm = confusion_matrix(target_to_noun, noun_scores.argmax(axis=1))
             _, acc = get_mean_accuracy(cm)
             print("Noun Acc@1: {:.3f}".format(acc))
-    return {
+    val_results = {
         "acc1": metrics["Acc@1"].avg,
         "acc5": metrics["Acc@5"].avg,
         "mean_acc": mean_acc,
     }
+
+    # --- wandb: log validation metrics ---
+    if args.wandb and dist_utils.is_main_process():
+        wandb.log({
+            "val/acc1": val_results["acc1"],
+            "val/acc5": val_results["acc5"],
+            "val/mean_acc": val_results["mean_acc"],
+        })
+
+    return val_results
 
 
 if __name__ == "__main__":
