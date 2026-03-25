@@ -492,11 +492,15 @@ def main(args):
     )
     print("len(val_loader) = {}".format(len(val_loader)))
 
+    val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
+    if dist_utils.is_main_process():
+        with open(os.path.join(args.output_dir, "eval_log.txt"), "a") as f:
+            f.write(json.dumps(val_stats) + "\n")
+    
+    if args.wandb and dist_utils.is_main_process():
+        wandb.log({"eval_" + k: v for k, v in val_stats.items()})
+
     if args.evaluate:
-        val_stats = validate_mir(val_loader, val_transform_gpu, model, criterion, args)
-        if dist_utils.is_main_process():
-            with open(os.path.join(args.output_dir, "eval_log.txt"), "a") as f:
-                f.write(json.dumps(val_stats) + "\n")
         return
 
     lr_schedule = cosine_scheduler(
@@ -557,7 +561,7 @@ def main(args):
 
         log_stats = {
             **{f"train_{k}": v for k, v in train_stats.items()},
-            **{f"test_{k}": v for k, v in val_stats.items()},
+            **{f"val_{k}": v for k, v in val_stats.items()},
             "epoch": epoch,
         }
 

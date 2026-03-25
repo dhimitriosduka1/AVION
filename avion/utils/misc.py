@@ -78,8 +78,8 @@ def generate_label_map(dataset):
         vn_list = []
         mapping_vn2narration = {}
         for f in [
-            f"{os.environ.get('EK100_META_DIR')}/epic-kitchens-100-annotations/EPIC_100_train.csv",
-            f"{os.environ.get('EK100_META_DIR')}/epic-kitchens-100-annotations/EPIC_100_validation.csv",
+            f"{os.environ.get('EK100_TRAIN')}",
+            f"{os.environ.get('EK100_VAL')}",
         ]:
             csv_reader = csv.reader(open(f))
             _ = next(csv_reader)  # skip the header
