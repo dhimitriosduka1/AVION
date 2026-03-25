@@ -1,4 +1,8 @@
 import argparse
+try:
+    import wandb
+except ImportError:
+    wandb = None
 from collections import OrderedDict
 from functools import partial
 import json
@@ -179,12 +183,30 @@ def get_args_parser():
     parser.add_argument("--dist-backend", default="nccl", type=str)
     parser.add_argument("--seed", default=0, type=int)
     parser.add_argument("--gpu", default=None, type=int, help="GPU id to use.")
+    # wandb
+    parser.add_argument("--wandb", action="store_true", help="enable wandb logging")
+    parser.add_argument("--wandb-project", default="Alignment Ablation", type=str, help="wandb project name")
+    parser.add_argument("--wandb-run-name", default=None, type=str, help="wandb run name")
     return parser
 
 
 def main(args):
     dist_utils.init_distributed_mode(args)
     dist_utils.random_seed(args.seed, dist_utils.get_rank())
+
+    # --- wandb init (rank 0 only) ---
+    if args.wandb and dist_utils.is_main_process():
+        if wandb is None:
+            raise ImportError("wandb is not installed. Install it with: pip install wandb")
+        wandb.init(
+            project=args.wandb_project,
+            name=args.wandb_run_name,
+            id=args.wandb_run_name,
+            tags=[],
+            resume="allow",
+            config=vars(args),
+            dir="/ptmp/dduka/work/logs/avion/"
+        )
 
     if args.pretrain_model:
         ckpt_path = args.pretrain_model
@@ -543,6 +565,14 @@ def main(args):
             with open(os.path.join(args.output_dir, "log.txt"), "a") as f:
                 f.write(json.dumps(log_stats) + "\n")
 
+        # --- wandb: log epoch-level summary ---
+        if args.wandb and dist_utils.is_main_process():
+            wandb.log({"epoch": epoch, **log_stats, "best_avg_map": best_acc1})
+
+    # --- wandb: finish ---
+    if args.wandb and dist_utils.is_main_process():
+        wandb.finish()
+
 
 def train(
     train_loader,
@@ -684,6 +714,21 @@ def train(
 
         if optim_iter % args.print_freq == 0:
             progress.display(optim_iter)
+
+        # --- wandb: log training step metrics ---
+        if args.wandb and dist_utils.is_main_process() and optim_iter % args.print_freq == 0:
+            step = iters_per_epoch * epoch + optim_iter
+            wandb.log({
+                "train/loss": metrics["loss"].val,
+                "train/max_margin_loss": metrics["max_margin_loss"].val,
+                "train/lr": optimizer.param_groups[0]["lr"],
+                "train/logit_scale": logit_scale,
+                "train/batch_time": batch_time.val,
+                "train/data_time": data_time.val,
+                "train/gpu_mem_gb": mem.val,
+                "global_step": step,
+            })
+
     progress.synchronize()
     return {
         **{k: v.avg for k, v in metrics.items()},
@@ -788,7 +833,7 @@ def validate_mir(val_loader, transform_gpu, model, criterion, args):
             vis_nDCG, txt_nDCG, avg_nDCG
         )
     )
-    return {
+    val_results = {
         **{k: v.avg for k, v in metrics.items()},
         "vis_map": vis_map,
         "txt_map": txt_map,
@@ -797,6 +842,21 @@ def validate_mir(val_loader, transform_gpu, model, criterion, args):
         "txt_ndcg": txt_nDCG,
         "avg_ndcg": avg_nDCG,
     }
+
+    # --- wandb: log validation metrics ---
+    if args.wandb and dist_utils.is_main_process():
+        wandb.log({
+            "val/loss": val_results["loss"],
+            "val/max_margin_loss": val_results["max_margin_loss"],
+            "val/vis_map": vis_map,
+            "val/txt_map": txt_map,
+            "val/avg_map": avg_map,
+            "val/vis_ndcg": vis_nDCG,
+            "val/txt_ndcg": txt_nDCG,
+            "val/avg_ndcg": avg_nDCG,
+        })
+
+    return val_results
 
 
 if __name__ == "__main__":
