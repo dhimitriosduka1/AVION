@@ -139,7 +139,7 @@ def plot_experiment_distributions(original_csv, augmented_dir, experiment_names)
     
     for i, (title, durations) in enumerate(durations_dict.items()):
         ax = axes[i]
-        ax.hist(durations.clip(upper=max_plot_val), bins=100, color='darkorange', edgecolor='black', alpha=0.7)
+        ax.hist(durations.clip(upper=max_plot_val), bins=50, color='darkorange', edgecolor='black', alpha=0.7)
         mean_val = durations.mean()
         ax.axvline(mean_val, color='blue', linestyle='dashed', label=f'Mean: {mean_val:.2f}s')
         ax.set_title(title, fontsize=12, fontweight='bold')
@@ -161,9 +161,8 @@ def plot_experiment_distributions(original_csv, augmented_dir, experiment_names)
 # ==========================================
 
 if __name__ == "__main__":
-    INPUT_CSV = '/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv'
-    OUTPUT_DIR = '/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/augmented_cls/'
+    INPUT_CSV = '/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/retrieval_annotations/EPIC_100_retrieval_train.csv'
+    OUTPUT_DIR = '/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/retrieval_annotations/augmented_mir/'
 
-    # Run the pipeline
-    processed_experiments = apply_safe_dynamic_augmentations(INPUT_CSV, OUTPUT_DIR)
-    plot_experiment_distributions(INPUT_CSV, OUTPUT_DIR, processed_experiments)
+    ran_experiments = apply_safe_dynamic_augmentations(INPUT_CSV, OUTPUT_DIR)
+    plot_experiment_distributions(INPUT_CSV, OUTPUT_DIR, ran_experiments)

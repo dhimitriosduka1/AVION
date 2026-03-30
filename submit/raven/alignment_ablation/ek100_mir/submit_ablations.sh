@@ -1,16 +1,16 @@
 #!/bin/bash
 
-AUG_DIR="/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/augmented_cls/"
+AUG_DIR="/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/retrieval_annotations/augmented_mir/"
 
 for CSV_FILE in "${AUG_DIR}"ek100_*.csv; do
     
     FILENAME=$(basename "$CSV_FILE" .csv)
     METHOD=${FILENAME#ek100_}
     
-    JOB_NAME="ek100_cls_${METHOD}"
-
     METHOD_UPPER=${METHOD^^}
-    RUN_NAME="EK100_CLS_${METHOD_UPPER}"
+    
+    JOB_NAME="ek100_mir_${METHOD_UPPER}"
+    RUN_NAME="EK100_MIR_${METHOD_UPPER}"
     
     echo "Submitting job: $JOB_NAME"
     echo "Using CSV: $CSV_FILE"
@@ -41,8 +41,9 @@ micromamba activate avion
 
 export LD_PRELOAD="/raven/u/system/soft/SLE_15/packages/x86_64/gcc/14.1.0/bin/../lib/gcc/x86_64-pc-linux-gnu/14.1.0/../../../../lib64/libstdc++.so.6"
 export EK100_TRAIN="${CSV_FILE}"
-export EK100_VAL="/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv"
+export EK100_VAL="/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/retrieval_annotations/EPIC_100_retrieval_test.csv"
 export EK100_VIDEO_DIR="/ptmp/dduka/databases/EK100/video_320p_15sec/"
+export RELEVANCY_PATH="/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/retrieval_annotations/relevancy/caption_relevancy_EPIC_100_retrieval_test.pkl"
 
 export MASTER_PORT=\$((12000 + \$RANDOM % 20000))
 export MASTER_ADDR=\$(scontrol show hostnames "\$SLURM_JOB_NODELIST" | head -n 1)
@@ -62,10 +63,11 @@ mkdir -p \$EXP_PATH
 export PYTHONPATH=.:third_party/decord/python/
     
 srun --cpu_bind=v --accel-bind=gn torchrun \\
-    --nproc_per_node=4 scripts/main_lavila_finetune_cls.py \\
+    --nproc_per_node=4 scripts/main_lavila_finetune_mir.py \\
     --root \$EK100_VIDEO_DIR \\
     --train-metadata \$EK100_TRAIN \\
     --val-metadata \$EK100_VAL \\
+    --relevancy-path \$RELEVANCY_PATH \\
     --video-chunk-length 15 \\
     --use-flash-attn \\
     --grad-checkpointing \\
