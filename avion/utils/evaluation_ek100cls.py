@@ -60,7 +60,7 @@ def get_val_dataset(
     return (
         VideoClassyDataset(
             dataset="ek100_cls",
-            root=f"{os.environ.get('EK100_META_DIR')}/video_320p_15sec",
+            root=f"{os.environ.get('EK100_VIDEO_DIR')}",
             transform=transform,
             metadata=os.environ.get("VAL_METADATA"),
             is_training=False,
