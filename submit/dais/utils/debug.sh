@@ -3,20 +3,21 @@
 #SBATCH -o /dais/fs/scratch/dduka/logs/avion/notebook_%j.out
 #SBATCH -e /dais/fs/scratch/dduka/logs/avion/notebook_%j.err
 #SBATCH -J debug_run
-#SBATCH --time=23:59:00
+#SBATCH --time=23:59:59
 
 #SBATCH --nodes=1
 #SBATCH --partition="gpu1"
-#SBATCH --gres=gpu:h200:1
+#SBATCH --cpus-per-task=48
+#SBATCH --threads-per-core=1
 
-#SBATCH --cpus-per-task=12
+#SBATCH --gres=gpu:4
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=250000
+#SBATCH --mem=1000000
 
 module purge
 
 eval "$(micromamba shell hook --shell bash)"
-micromamba activate avion_fa2
+micromamba activate swift
 
 echo "------------------------------------------------"
 echo "Job running on node: $SLURMD_NODENAME"

@@ -3,7 +3,7 @@
 #SBATCH -o /ptmp/dduka/work/logs/avion/ek100_cls_finetune_baseline_%A_%a_%x_%j_%N.out
 #SBATCH -e /ptmp/dduka/work/logs/avion/ek100_cls_finetune_baseline_%A_%a_%x_%j_%N.err
 
-#SBATCH --job-name ek100_cls_finetune_baseline
+#SBATCH --job-name ek100_cls_finetune_baseline_from_original_dual_encoder
 
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -13,6 +13,7 @@
 #SBATCH --cpus-per-task=72
 
 #SBATCH --time=23:59:59
+#SBATCH --array=0-2%1
 
 module purge
 module load anaconda/3/2023.03
@@ -38,7 +39,7 @@ echo "GPUs per node: $SLURM_GPUS_ON_NODE"
 
 cd /u/dduka/work/projects/Thesis/AVION
 
-RUN_NAME=EK100_CLS
+RUN_NAME=ek100_cls_from_original_dual_encoder
 EXP_PATH=/ptmp/dduka/work/training_metadata/avion/$RUN_NAME
 
 mkdir -p $EXP_PATH
@@ -57,6 +58,6 @@ srun --cpu_bind=v --accel-bind=gn torchrun \
     --batch-size 128 \
     --fused-decode-crop \
     --use-multi-epochs-loader \
-    --pretrain-model /u/dduka/work/projects/Thesis/AVION/checkpoints/avion_pretrain_lavila_vitb_best.pt \
+    --pretrain-model /ptmp/dduka/work/training_metadata/avion/qwen3vl_original_full_baseline/checkpoint_best.pt \
     --wandb-run-name $RUN_NAME \
     --wandb \

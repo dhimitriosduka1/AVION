@@ -2,11 +2,22 @@ import pickle
 import pandas as pd
 import numpy as np
 import os
+import json
 import matplotlib.pyplot as plt
 
 # ==========================================
 # 1. AUGMENTATION GENERATOR (.pkl)
 # ==========================================
+
+IOU_THRESHOLDS = [0.1, 0.3, 0.5, 0.7, 0.9]
+
+
+def compute_temporal_iou(start1, stop1, start2, stop2):
+    """Vectorised temporal IoU between two sets of intervals."""
+    intersection = np.maximum(0.0, np.minimum(stop1, stop2) - np.maximum(start1, start2))
+    union = np.maximum(stop1, stop2) - np.minimum(start1, start2)
+    return np.where(union > 0, intersection / union, 0.0)
+
 
 def apply_safe_dynamic_augmentations_pkl(input_pkl, output_dir):
     print(f"Loading dataset from {input_pkl}...")
@@ -64,17 +75,18 @@ def apply_safe_dynamic_augmentations_pkl(input_pkl, output_dir):
     }
 
     processed_names = []
+    iou_results = {}
 
     for exp_name, (op_type, val) in experiments.items():
         print(f"  -> Processing: {exp_name}...")
         df_exp = df.copy()
-        
+
         if op_type == "add":
             n = val
             # Add n/2 to the end, subtract n/2 from the start
             df_exp['new_start_sec'] = df_exp[1] - (n / 2.0)
             df_exp['new_stop_sec'] = df_exp[2] + (n / 2.0)
-            
+
         elif op_type == "scale":
             N = val
             # Scale duration by N, extending symmetrically from the center
@@ -88,21 +100,36 @@ def apply_safe_dynamic_augmentations_pkl(input_pkl, output_dir):
         df_exp['new_stop_sec'] = np.minimum(df_exp['new_stop_sec'], df_exp['video_max_sec'])
         df_exp['new_stop_sec'] = np.maximum(df_exp['new_stop_sec'], df_exp['new_start_sec'] + 0.1)
 
+        # --- IoU between original and augmented segments ---
+        ious = compute_temporal_iou(
+            df[1].values, df[2].values,
+            df_exp['new_start_sec'].values, df_exp['new_stop_sec'].values,
+        )
+        metrics = {"mIoU": float(ious.mean())}
+        for thr in IOU_THRESHOLDS:
+            metrics[f"IoU@{thr}"] = float((ious >= thr).mean())
+        iou_results[exp_name] = metrics
+
         # Map back to the original index columns
         df_exp[1] = df_exp['new_start_sec']
         df_exp[2] = df_exp['new_stop_sec']
 
         # Extract only columns 0, 1, 2, 3 and convert back to a list of tuples
         final_data = list(df_exp[[0, 1, 2, 3]].itertuples(index=False, name=None))
-        
+
         # Dump to new .pkl file
-        output_path = os.path.join(output_dir, f"ego4d_{exp_name}.pkl")
-        with open(output_path, 'wb') as f:
-            pickle.dump(final_data, f)
+        # output_path = os.path.join(output_dir, f"ego4d_{exp_name}.pkl")
+        # with open(output_path, 'wb') as f:
+        #     pickle.dump(final_data, f)
         processed_names.append(exp_name)
 
+    iou_json_path = os.path.join(output_dir, "iou_results.json")
+    with open(iou_json_path, "w") as f:
+        json.dump(iou_results, f, indent=2)
+    print(f"IoU results saved to {iou_json_path}")
+
     print(f"All splits saved successfully to {output_dir}\n")
-    return processed_names
+    return processed_names, iou_results
 
 # ==========================================
 # 2. DISTRIBUTION PLOTTER (.pkl)
@@ -175,7 +202,7 @@ if __name__ == "__main__":
     OUTPUT_DIR = '/ptmp/dduka/databases/ego4d/augemented_gt_labels/'
 
     # Run the pipeline and capture the generated experiment names
-    ran_experiments = apply_safe_dynamic_augmentations_pkl(INPUT_PKL, OUTPUT_DIR)
-    
+    ran_experiments, iou_results = apply_safe_dynamic_augmentations_pkl(INPUT_PKL, OUTPUT_DIR)
+
     # Plot using the captured experiment names
     plot_experiment_distributions_pkl(INPUT_PKL, OUTPUT_DIR, ran_experiments)

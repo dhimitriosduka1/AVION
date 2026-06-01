@@ -116,8 +116,14 @@ def video_loader(
 
                 if chunk_end < 0:
                     print("Erroneous video: ", vid)
+                    if fast_rrc:
+                        ph_size = rrc_params[0]
+                    elif fast_rcc:
+                        ph_size = rcc_params[0]
+                    else:
+                        ph_size = rrc_params[0]
                     placeholder = torch.zeros(
-                        (clip_length, rrc_params[0], rrc_params[0], 3),
+                        (clip_length, ph_size, ph_size, 3),
                         dtype=torch.float32,
                     )
                     return placeholder

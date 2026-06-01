@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import os
+import json
 import matplotlib.pyplot as plt
 
 # ==========================================
@@ -27,6 +28,16 @@ def sec_to_time(seconds):
 # 2. AUGMENTATION GENERATOR (PRESERVING ALL COLUMNS)
 # ==========================================
 
+IOU_THRESHOLDS = [0.1, 0.3, 0.5, 0.7, 0.9]
+
+
+def compute_temporal_iou(start1, stop1, start2, stop2):
+    """Vectorised temporal IoU between two sets of intervals."""
+    intersection = np.maximum(0.0, np.minimum(stop1, stop2) - np.maximum(start1, start2))
+    union = np.maximum(stop1, stop2) - np.minimum(start1, start2)
+    return np.where(union > 0, intersection / union, 0.0)
+
+
 def apply_safe_dynamic_augmentations(input_csv, output_dir):
     print(f"Loading dataset from {input_csv}...")
     df = pd.read_csv(input_csv)
@@ -43,43 +54,55 @@ def apply_safe_dynamic_augmentations(input_csv, output_dir):
     # Define Ablation Experiments
     experiments = {
         # Method 1: Add n seconds total (subtract n/2 from start, add n/2 to end)
-        "add_1_sec": ("add", 1.0),
-        "add_2_sec": ("add", 2.0),
-        "add_3_sec": ("add", 3.0),
-        "add_4_sec": ("add", 4.0),
-        "add_5_sec": ("add", 5.0),
-        "add_6_sec": ("add", 6.0),
-        "add_7_sec": ("add", 7.0),
-        "add_8_sec": ("add", 8.0),
-        # Method 2: Scale segment by factor of N
-        "scale_1_1x": ("scale", 1.1),
-        "scale_1_2x": ("scale", 1.2),
-        "scale_1_3x": ("scale", 1.3),
-        "scale_1_4x": ("scale", 1.4),
-        "scale_1_5x": ("scale", 1.5),
-        "scale_1_6x": ("scale", 1.6),
-        "scale_1_7x": ("scale", 1.7),
-        "scale_1_8x": ("scale", 1.8),
-        "scale_1_9x": ("scale", 1.9),
-        "scale_2_0x": ("scale", 2.0),
-        "scale_2_1x": ("scale", 2.1),
-        "scale_2_2x": ("scale", 2.2),
-        "scale_2_3x": ("scale", 2.3),
-        "scale_2_4x": ("scale", 2.4),
-        "scale_2_5x": ("scale", 2.5)
+        # "add_1_sec": ("add", 1.0),
+        # "add_2_sec": ("add", 2.0),
+        # "add_3_sec": ("add", 3.0),
+        # "add_4_sec": ("add", 4.0),
+        # "add_5_sec": ("add", 5.0),
+        # "add_6_sec": ("add", 6.0),
+        # "add_7_sec": ("add", 7.0),
+        # "add_8_sec": ("add", 8.0),
+        # # Method 2: Scale segment by factor of N
+        # "scale_1_1x": ("scale", 1.1),
+        # "scale_1_2x": ("scale", 1.2),
+        # "scale_1_3x": ("scale", 1.3),
+        # "scale_1_4x": ("scale", 1.4),
+        # "scale_1_5x": ("scale", 1.5),
+        # "scale_1_6x": ("scale", 1.6),
+        # "scale_1_7x": ("scale", 1.7),
+        # "scale_1_8x": ("scale", 1.8),
+        # "scale_1_9x": ("scale", 1.9),
+        # "scale_2_0x": ("scale", 2.0),
+        # "scale_2_1x": ("scale", 2.1),
+        # "scale_2_2x": ("scale", 2.2),
+        # "scale_2_3x": ("scale", 2.3),
+        # "scale_2_4x": ("scale", 2.4),
+        # "scale_2_5x": ("scale", 2.5),
+        # Method 3: Scale down segment by factor of N
+        "scale_0_95x": ("scale", 0.95),
+        "scale_0_9x": ("scale", 0.9),
+        "scale_0_85x": ("scale", 0.85),
+        "scale_0_8x": ("scale", 0.8),
+        "scale_0_75x": ("scale", 0.75),
+        "scale_0_7x": ("scale", 0.7),
+        "scale_0_7x": ("scale", 0.65),
+        "scale_0_6x": ("scale", 0.6),
+        "scale_0_55x": ("scale", 0.55),
+        "scale_0_5x": ("scale", 0.5),
     }
 
     processed_names = []
+    iou_results = {}
 
     for exp_name, (op_type, val) in experiments.items():
         print(f"  -> Processing: {exp_name}...")
         df_exp = df.copy()
-        
+
         if op_type == "add":
             n = val
             df_exp['_new_start_sec'] = df_exp['_start_sec'] - (n / 2.0)
             df_exp['_new_stop_sec'] = df_exp['_stop_sec'] + (n / 2.0)
-            
+
         elif op_type == "scale":
             N = val
             extra_time = df_exp['_duration'] * (N - 1.0)
@@ -92,6 +115,17 @@ def apply_safe_dynamic_augmentations(input_csv, output_dir):
         df_exp['_new_stop_sec'] = np.minimum(df_exp['_new_stop_sec'], df_exp['_video_max_sec'])
         df_exp['_new_stop_sec'] = np.maximum(df_exp['_new_stop_sec'], df_exp['_new_start_sec'] + 0.1)
 
+        # --- IoU between original and augmented segments ---
+        ious = compute_temporal_iou(
+            df['_start_sec'].values, df['_stop_sec'].values,
+            df_exp['_new_start_sec'].values, df_exp['_new_stop_sec'].values,
+        )
+        metrics = {"mIoU": float(ious.mean())}
+        for thr in IOU_THRESHOLDS:
+            key = f"IoU@{thr}"
+            metrics[key] = float((ious >= thr).mean())
+        iou_results[exp_name] = metrics
+
         # 1. Update the required timestamp columns
         df_exp['start_timestamp'] = df_exp['_new_start_sec'].apply(sec_to_time)
         df_exp['stop_timestamp'] = df_exp['_new_stop_sec'].apply(sec_to_time)
@@ -103,13 +137,18 @@ def apply_safe_dynamic_augmentations(input_csv, output_dir):
         # 3. Drop only the temporary calculation columns (prefixed with underscore)
         temp_cols = [c for c in df_exp.columns if c.startswith('_')]
         df_exp = df_exp.drop(columns=temp_cols)
-        
+
         output_path = os.path.join(output_dir, f"ek100_{exp_name}.csv")
         df_exp.to_csv(output_path, index=False)
         processed_names.append(exp_name)
-        
+
+    iou_json_path = os.path.join(output_dir, "iou_results.json")
+    with open(iou_json_path, "w") as f:
+        json.dump(iou_results, f, indent=2)
+    print(f"IoU results saved to {iou_json_path}")
+
     print(f"All splits saved successfully to {output_dir}\n")
-    return processed_names
+    return processed_names, iou_results
 
 # ==========================================
 # 3. DISTRIBUTION PLOTTER
@@ -165,5 +204,5 @@ if __name__ == "__main__":
     OUTPUT_DIR = '/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/augmented_cls/'
 
     # Run the pipeline
-    processed_experiments = apply_safe_dynamic_augmentations(INPUT_CSV, OUTPUT_DIR)
+    processed_experiments, iou_results = apply_safe_dynamic_augmentations(INPUT_CSV, OUTPUT_DIR)
     plot_experiment_distributions(INPUT_CSV, OUTPUT_DIR, processed_experiments)

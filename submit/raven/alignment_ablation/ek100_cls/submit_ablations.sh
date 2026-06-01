@@ -2,7 +2,7 @@
 
 AUG_DIR="/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/augmented_cls/"
 
-for CSV_FILE in "${AUG_DIR}"ek100_*.csv; do
+for CSV_FILE in "${AUG_DIR}"ek100_scale_0*.csv; do
     
     FILENAME=$(basename "$CSV_FILE" .csv)
     METHOD=${FILENAME#ek100_}
