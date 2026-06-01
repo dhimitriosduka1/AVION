@@ -1,5 +1,6 @@
 import os
 import torch
+import torch.nn.functional as F
 from torch.cuda import amp
 import numpy as np
 import avion.utils.distributed as dist_utils
@@ -12,7 +13,7 @@ from avion.utils.evaluation_common import validate_zeroshot_cls, get_mean_accura
 def egomcq_accuracy_metrics(preds, labels, types):
     metrics = {}
     type_list = torch.unique(types)
-    group_list = ["Intra-video", "Inter-video"]
+    group_list = ["intra_video", "inter_video"]
     for type_i, group_i in zip(type_list, group_list):
         correct = 0
         total = 0
@@ -59,6 +60,10 @@ def validate_mcq(val_loader, model, fused_decode_crop, transform_gpu, disable_am
                     frames_options
                 )
 
+                print(f"Norm of image features before normalization: {torch.norm(image_features, dim=-1).mean().item():.4f}")
+                image_features = F.normalize(image_features, dim=-1)
+                print(f"Norm of image features after normalization: {torch.norm(image_features, dim=-1).mean().item():.4f}")
+
                 image_features = image_features.view(
                     batch_size, -1, *image_features.shape[1:]
                 )
@@ -71,6 +76,10 @@ def validate_mcq(val_loader, model, fused_decode_crop, transform_gpu, disable_am
                     query_features = dist_utils.get_model(model).encode_text(
                         texts_query
                     )
+
+                print(f"Norm of query features before normalization: {torch.norm(query_features, dim=-1).mean().item():.4f}")
+                query_features = F.normalize(query_features, dim=-1)
+                print(f"Norm of query features after normalization: {torch.norm(query_features, dim=-1).mean().item():.4f}")
 
                 all_gts.append(answer)
                 all_types.append(q_type)
