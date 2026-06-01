@@ -80,6 +80,7 @@ def validate_zeroshot_cls(
                 text_features.append(class_embeddings)
 
             text_features = torch.stack(text_features, dim=0)
+            print(f"Norm of text features after encoding: {torch.norm(text_features, dim=-1).mean().item():.4f}")
 
             print("=> start forwarding")
             for _, (images, target) in tqdm(enumerate(val_loader), desc="Forwarding"):
@@ -94,9 +95,11 @@ def validate_zeroshot_cls(
                     target = target.cuda(non_blocking=True)
 
                     image_features = dist_utils.get_model(model).encode_image(images)
+                    print(f"Norm of image features before normalization: {torch.norm(image_features, dim=-1).mean().item():.4f}")
                     image_features = image_features / image_features.norm(
                         dim=-1, keepdim=True
                     )
+                    print(f"Norm of image features after normalization: {torch.norm(image_features, dim=-1).mean().item():.4f}")
                     all_vis_features.append(image_features)
 
                     logits_per_image = image_features @ text_features.t()
@@ -111,9 +114,11 @@ def validate_zeroshot_cls(
                         image_features = dist_utils.get_model(model).encode_image(
                             images
                         )
+                        print(f"Norm of image features before normalization: {torch.norm(image_features, dim=-1).mean().item():.4f}")
                         image_features = image_features / image_features.norm(
                             dim=-1, keepdim=True
                         )
+                        print(f"Norm of image features after normalization: {torch.norm(image_features, dim=-1).mean().item():.4f}")
 
                         logits_per_image = image_features @ text_features.t()
                         logits_all_clips.append(logits_per_image)

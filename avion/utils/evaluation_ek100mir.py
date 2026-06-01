@@ -246,17 +246,26 @@ def validate_mir(val_loader, transform_gpu, model, criterion, args):
                     inputs[0] = inputs[0].permute(0, 4, 1, 2, 3)
                     inputs[0] = transform_gpu(inputs[0])
                 image_features, text_features, logit_scale = model(*inputs)
-                gathered_image_features = [
-                    torch.zeros_like(image_features) for _ in range(args.world_size)
-                ]
-                gathered_text_features = [
-                    torch.zeros_like(text_features) for _ in range(args.world_size)
-                ]
-                torch.distributed.all_gather(gathered_image_features, image_features)
-                torch.distributed.all_gather(gathered_text_features, text_features)
-                for j in range(args.world_size):
-                    all_video_embed[j].append(gathered_image_features[j].detach().cpu())
-                    all_text_embed[j].append(gathered_text_features[j].detach().cpu())
+                print(f"Norm of image features: {torch.norm(image_features, dim=-1).mean().item():.4f}")
+                print(f"Norm of text features: {torch.norm(text_features, dim=-1).mean().item():.4f}")
+                if (
+                    torch.distributed.is_available()
+                    and torch.distributed.is_initialized()
+                ):
+                    gathered_image_features = [
+                        torch.zeros_like(image_features) for _ in range(args.world_size)
+                    ]
+                    gathered_text_features = [
+                        torch.zeros_like(text_features) for _ in range(args.world_size)
+                    ]
+                    torch.distributed.all_gather(gathered_image_features, image_features)
+                    torch.distributed.all_gather(gathered_text_features, text_features)
+                    for j in range(args.world_size):
+                        all_video_embed[j].append(gathered_image_features[j].detach().cpu())
+                        all_text_embed[j].append(gathered_text_features[j].detach().cpu())
+                else:
+                    all_video_embed[0].append(image_features.detach().cpu())
+                    all_text_embed[0].append(text_features.detach().cpu())
                 loss_dict = criterion(image_features, text_features, logit_scale)
 
                 for k in loss_dict:
