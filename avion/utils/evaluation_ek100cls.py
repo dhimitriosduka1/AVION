@@ -106,8 +106,8 @@ def validate_zeroshot(
         f"=> ek100cls zeroshot evaluation results: top1={top1.item():.2f}, top3={top3.item():.2f}, top5={top5.item():.2f}, top10={top10.item():.2f}"
     )
     return {
-        "top1": top1,
-        "top3": top3,
-        "top5": top5,
-        "top10": top10,
+        "top1": top1.item(),
+        "top3": top3.item(),
+        "top5": top5.item(),
+        "top10": top10.item(),
     }

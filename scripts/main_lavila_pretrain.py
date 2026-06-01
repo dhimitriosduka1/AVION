@@ -654,8 +654,8 @@ def main(args):
     print("len(egomcq_val_loader) = {}".format(len(egomcq_val_loader)))
 
     val_loaders = {
-        "ego4d_mir": ek100_mir_val_loader,
-        "ego4d_cls": (ek100_cls_val_loader, ek100_cls_labels),
+        "ek100_mir": ek100_mir_val_loader,
+        "ek100_cls": (ek100_cls_val_loader, ek100_cls_labels),
         "egtea": (egtea_val_loader, egtea_labels),
         "charades": (charades_val_loader, charades_labels),
         "ego4d_mcq": egomcq_val_loader,
@@ -721,7 +721,7 @@ def main(args):
             model, criterion, tokenizer, val_transform_gpu, args, val_loaders
         )
 
-        acc1 = val_result["ego4d_mir"]["avg_map"]
+        acc1 = val_result["ek100_mir"]["avg_map"]
 
         is_best = acc1 > best_acc1
         best_acc1 = max(acc1, best_acc1)

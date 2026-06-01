@@ -8,14 +8,14 @@ from avion.utils.evaluation_ek100mir import validate_mir
 def validate_all(model, criterion, tokenizer, val_transform_gpu, args, val_loaders):
     results = {}
 
-    if "ego4d_mir" in val_loaders:
-        results["ego4d_mir"] = validate_mir(
-            val_loaders["ego4d_mir"], val_transform_gpu, model, criterion, args
+    if "ek100_mir" in val_loaders:
+        results["ek100_mir"] = validate_mir(
+            val_loaders["ek100_mir"], val_transform_gpu, model, criterion, args
         )
 
-    if "ego4d_cls" in val_loaders:
-        loader, labels = val_loaders["ego4d_cls"]
-        results["ego4d_cls"] = eval_ek100cls.validate_zeroshot(
+    if "ek100_cls" in val_loaders:
+        loader, labels = val_loaders["ek100_cls"]
+        results["ek100_cls"] = eval_ek100cls.validate_zeroshot(
             val_loader=loader,
             use_template=True,
             labels=labels,
