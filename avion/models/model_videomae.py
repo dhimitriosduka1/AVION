@@ -287,10 +287,11 @@ class VisionTransformer(nn.Module):
             x = x + self.pos_embed.expand(B, -1, -1).type_as(x).to(x.device).clone().detach()
         x = self.pos_drop(x)
 
-        if self.use_checkpoint:
+        use_checkpoint = self.use_checkpoint and self.training and torch.is_grad_enabled()
+        if use_checkpoint:
             for blk in self.blocks:
-                x = checkpoint.checkpoint(blk, x)
-        else:   
+                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
+        else:
             for blk in self.blocks:
                 x = blk(x)
 
@@ -382,10 +383,11 @@ class PretrainVisionTransformerEncoder(nn.Module):
         B, _, C = x.shape
         x_vis = x[~mask].reshape(B, -1, C) # ~mask means visible
 
-        if self.use_checkpoint:
+        use_checkpoint = self.use_checkpoint and self.training and torch.is_grad_enabled()
+        if use_checkpoint:
             for blk in self.blocks:
-                x_vis = checkpoint.checkpoint(blk, x_vis)
-        else:   
+                x_vis = checkpoint.checkpoint(blk, x_vis, use_reentrant=False)
+        else:
             for blk in self.blocks:
                 x_vis = blk(x_vis)
 
@@ -450,10 +452,11 @@ class PretrainVisionTransformerDecoder(nn.Module):
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
     def forward(self, x, return_token_num):
-        if self.use_checkpoint:
+        use_checkpoint = self.use_checkpoint and self.training and torch.is_grad_enabled()
+        if use_checkpoint:
             for blk in self.blocks:
-                x = checkpoint.checkpoint(blk, x)
-        else:   
+                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
+        else:
             for blk in self.blocks:
                 x = blk(x)
 

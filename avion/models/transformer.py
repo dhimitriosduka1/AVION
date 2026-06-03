@@ -183,9 +183,15 @@ class Transformer(nn.Module):
         return self.resblocks[0].mlp.c_fc.weight.dtype
 
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None):
+        use_checkpoint = (
+            self.grad_checkpointing
+            and self.training
+            and torch.is_grad_enabled()
+            and not torch.jit.is_scripting()
+        )
         for r in self.resblocks:
-            if self.grad_checkpointing and not torch.jit.is_scripting():
-                x = checkpoint(r, x, attn_mask)
+            if use_checkpoint:
+                x = checkpoint(r, x, attn_mask, use_reentrant=False)
             else:
                 x = r(x, attn_mask=attn_mask)
         return x

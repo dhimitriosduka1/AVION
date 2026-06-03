@@ -1,5 +1,6 @@
 import argparse
 from collections import OrderedDict
+import contextlib
 from functools import partial
 import os
 import time
@@ -806,11 +807,11 @@ def train(
         _ = (
             inputs.pop()
         )  # loader will a "relevancy" variable which is not needed except ek100_mir
-        optimizer.zero_grad()
 
         tic = time.time()
         # compute output
         if args.update_freq == 1:
+            optimizer.zero_grad()
             with amp.autocast(enabled=not args.disable_amp):
                 if args.fused_decode_crop and len(transform_gpu) > 0:
                     inputs[0] = inputs[0].permute(0, 4, 1, 2, 3)
@@ -818,8 +819,14 @@ def train(
                 image_features, text_features, logit_scale = model(*inputs)
                 loss_dict = criterion(image_features, text_features, logit_scale)
                 loss = loss_dict["loss"]
+            check_loss_nan(loss)
+            scaler.scale(loss).backward()
         else:
             # First, cache the features without any gradient tracking.
+            images, texts = inputs[0], inputs[1]
+            if args.fused_decode_crop and len(transform_gpu) > 0:
+                images = images.permute(0, 4, 1, 2, 3)
+                images = transform_gpu(images)
             with torch.no_grad():
                 with amp.autocast(enabled=not args.disable_amp):
                     chunk_image_features, chunk_text_features, _ = model(images, texts)
@@ -834,32 +841,39 @@ def train(
                 # FIXME this makes data time logging unreliable when accumulating
                 continue
 
-            # Now, ready to take gradients for the last accum_freq batches.
+            # Now, ready to take gradients for the last update_freq batches.
             # Re-do the forward pass for those batches, and use the cached features from the other batches as negatives.
             # Call backwards each time, but only step optimizer at the end.
             optimizer.zero_grad()
-            for j in range(args.accum_freq):
+            accum_loss_dict = {}
+            for j in range(args.update_freq):
                 images = accum_images[j]
                 texts = accum_texts[j]
-                with amp.autocast(enabled=not args.disable_amp):
-                    chunk_image_features, chunk_text_features, logit_scale = model(
-                        images, texts
-                    )
-                    image_features = torch.cat(
-                        accum_image_features[:j]
-                        + [chunk_image_features]
-                        + accum_image_features[j + 1 :]
-                    )
-                    text_features = torch.cat(
-                        accum_text_features[:j]
-                        + [chunk_text_features]
-                        + accum_text_features[j + 1 :]
-                    )
-                    loss_dict = criterion(image_features, text_features, logit_scale)
-                    loss = loss_dict["loss"]
-
-        check_loss_nan(loss)
-        scaler.scale(loss).backward()
+                is_last = j == args.update_freq - 1
+                sync_ctx = contextlib.nullcontext() if (not args.distributed or is_last) else model.no_sync()
+                with sync_ctx:
+                    with amp.autocast(enabled=not args.disable_amp):
+                        chunk_image_features, chunk_text_features, logit_scale = model(
+                            images, texts
+                        )
+                        image_features = torch.cat(
+                            accum_image_features[:j]
+                            + [chunk_image_features]
+                            + accum_image_features[j + 1 :]
+                        )
+                        text_features = torch.cat(
+                            accum_text_features[:j]
+                            + [chunk_text_features]
+                            + accum_text_features[j + 1 :]
+                        )
+                        loss_dict = criterion(image_features, text_features, logit_scale)
+                        loss = loss_dict["loss"] / args.update_freq
+                    check_loss_nan(loss)
+                    scaler.scale(loss).backward()
+                for k, v in loss_dict.items():
+                    accum_loss_dict[k] = accum_loss_dict.get(k, 0.0) + v / args.update_freq
+            loss_dict = accum_loss_dict
+            accum_images, accum_texts, accum_image_features, accum_text_features = [], [], [], []
 
         if (data_iter + 1) % args.update_freq != 0:
             continue
@@ -895,7 +909,7 @@ def train(
         if dist_utils.is_main_process():
             wandb.log(
                 data={
-                    "loss": loss.item(),
+                    "loss": loss_dict["loss"].item(),
                     "lr": optimizer.param_groups[0]["lr"],
                     "logit_scale": logit_scale,
                 },
