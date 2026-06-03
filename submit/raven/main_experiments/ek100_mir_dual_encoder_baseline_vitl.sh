@@ -20,8 +20,8 @@ module load anaconda/3/2023.03
 conda activate avion
 
 export LD_PRELOAD="/raven/u/system/soft/SLE_15/packages/x86_64/gcc/14.1.0/bin/../lib/gcc/x86_64-pc-linux-gnu/14.1.0/../../../../lib64/libstdc++.so.6"
-export EK100_TRAIN="/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv"
-export EK100_VAL="/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv"
+export EK100_TRAIN="/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/retrieval_annotations/EPIC_100_retrieval_train.csv"
+export EK100_VAL="/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/retrieval_annotations/EPIC_100_retrieval_test.csv"
 export EK100_VIDEO_DIR="/ptmp/dduka/databases/EK100/video_320p_15sec/"
 export RELEVANCY_PATH="/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/retrieval_annotations/relevancy/caption_relevancy_EPIC_100_retrieval_test.pkl"
 
