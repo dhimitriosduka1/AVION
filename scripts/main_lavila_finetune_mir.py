@@ -214,7 +214,7 @@ def main(args):
         raise Exception(
             "no checkpoint found, add it by `--pretrain-model ${CHECKPOINT_PATH}`"
         )
-    ckpt = torch.load(ckpt_path, map_location="cpu")
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     state_dict = OrderedDict()
     for k, v in ckpt["state_dict"].items():
         state_dict[k.replace("module.", "")] = v

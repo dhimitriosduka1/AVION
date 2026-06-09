@@ -5,7 +5,7 @@
 
 #SBATCH --job-name lavila_pretrain_baseline_vitl_ek100_mir
 
-#SBATCH --nodes=2
+#SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 
 #SBATCH --gres=gpu:4
@@ -70,7 +70,7 @@ srun --cpu_bind=v --accel-bind=gn torchrun \
     --use-flash-attn \
     --grad-checkpointing \
     --use-fast-conv1 \
-    --batch-size 64 \
+    --batch-size 32 \
     --fused-decode-crop \
     --use-multi-epochs-loader \
     --pretrain-model /ptmp/dduka/work/training_metadata/avion/LAVILA_PRETRAIN_BASELINE_VITL14/checkpoint_best.pt \

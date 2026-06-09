@@ -21,6 +21,8 @@ conda activate avion
 jupyter lab --no-browser --ip=0.0.0.0 --port=8888 \
   --ServerApp.token='' \
   --ServerApp.password='' \
+  --ServerApp.password_required=False \
+  --ServerApp.allow_password_change=False \
   --IdentityProvider.token='' \
   --NotebookApp.token='' \
   --NotebookApp.password=''

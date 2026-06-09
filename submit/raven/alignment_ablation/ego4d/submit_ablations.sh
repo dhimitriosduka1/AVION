@@ -54,7 +54,7 @@ export CHARADES_DATA_DIR="/ptmp/dduka/databases/charades_ego/CharadesEgo_v1_480"
 export CHARADES_META_DIR="/ptmp/dduka/databases/charades_ego/CharadesEgo/CharadesEgo_v1_test_only1st.csv"
 
 export EGO4D_MCQ_DATA_DIR="/ptmp/dduka/databases/ego4d/video_320px_15sec/"
-export EGO4D_MCQ_META_DIR="/ptmp/dduka/databases/ego4d/jsons/egomcq.json"
+export EGO4D_MCQ_META_DIR="/ptmp/dduka/databases/ego4d/egovlp2/egomcq.json"
 
 export MASTER_PORT=\$((12000 + \$RANDOM % 20000))
 export MASTER_ADDR=\$(scontrol show hostnames "\$SLURM_JOB_NODELIST" | head -n 1)

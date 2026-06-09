@@ -5,7 +5,7 @@
 
 #SBATCH --job-name dual_encoder_pretrain_qwen_vitl14
 
-#SBATCH --nodes=1
+#SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 
 #SBATCH --gres=gpu:4
@@ -47,7 +47,7 @@ echo "GPUs per node: $SLURM_GPUS_ON_NODE"
 
 cd /u/dduka/work/projects/Thesis/AVION
 
-RUN_NAME=DUAL_ENCODER_QWEN_REF_VITL14
+RUN_NAME=DUAL_ENCODER_QWEN_REFERENCE_VITL14_
 EXP_PATH=/ptmp/dduka/work/training_metadata/avion/$RUN_NAME
 
 mkdir -p $EXP_PATH
@@ -66,7 +66,6 @@ srun --cpu_bind=v --accel-bind=gn torchrun \
     --grad-checkpointing \
     --use-fast-conv1 \
     --batch-size 128 \
-    --update-freq 4 \
     --freeze-temperature \
     --fused-decode-crop \
     --fix-lr \

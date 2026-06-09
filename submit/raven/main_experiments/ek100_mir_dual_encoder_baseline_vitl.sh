@@ -5,7 +5,7 @@
 
 #SBATCH --job-name dual_encoder_baseline_ek100_mir_vitl
 
-#SBATCH --nodes=2
+#SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 
 #SBATCH --gres=gpu:4
@@ -48,7 +48,7 @@ echo "GPUs per node: $SLURM_GPUS_ON_NODE"
 
 cd /u/dduka/work/projects/Thesis/AVION
 
-RUN_NAME=EK100_MIR_DUAL_ENCODER_EGO4D_VITL14
+RUN_NAME=EK100_MIR_DUAL_ENCODER_EGO4D_VITL14_
 EXP_PATH=/ptmp/dduka/work/training_metadata/avion/$RUN_NAME
 
 export PYTHONPATH=.:third_party/decord/python/
@@ -70,10 +70,10 @@ srun --cpu_bind=v --accel-bind=gn torchrun \
     --use-flash-attn \
     --grad-checkpointing \
     --use-fast-conv1 \
-    --batch-size 64 \
+    --batch-size 32 \
     --fused-decode-crop \
     --use-multi-epochs-loader \
-    --pretrain-model /ptmp/dduka/work/training_metadata/avion/DUAL_ENCODER_E4D_VITL14/checkpoint_best.pt \
+    --pretrain-model /ptmp/dduka/work/training_metadata/avion/DUAL_ENCODER_EGO4D_VITL14_/checkpoint_best.pt \
     --output-dir $EXP_PATH \
     --wandb \
     --wandb-project "Main Experiments" \

@@ -270,7 +270,7 @@ def main(args):
         raise Exception(
             "no checkpoint found, add it by `--pretrain-model ${CHECKPOINT_PATH}`"
         )
-    ckpt = torch.load(ckpt_path, map_location="cpu")
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     state_dict = OrderedDict()
     for k, v in ckpt["state_dict"].items():
         state_dict[k.replace("module.", "")] = v
@@ -392,7 +392,7 @@ def main(args):
     if args.resume:
         if os.path.isfile(args.resume):
             print("=> loading resume checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume, map_location="cpu")
+            checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
             if checkpoint["args"].clip_length != args.clip_length:
                 load_temporal_embedding = checkpoint["state_dict"][
                     "module.visual.temporal_embedding"
@@ -435,7 +435,7 @@ def main(args):
         latest = os.path.join(args.output_dir, "checkpoint.pt")
         if os.path.isfile(latest):
             print("=> loading latest checkpoint '{}'".format(latest))
-            latest_checkpoint = torch.load(latest, map_location="cpu")
+            latest_checkpoint = torch.load(latest, map_location="cpu", weights_only=False)
             args.start_epoch = latest_checkpoint["epoch"]
             model.load_state_dict(latest_checkpoint["state_dict"])
             optimizer.load_state_dict(latest_checkpoint["optimizer"])
