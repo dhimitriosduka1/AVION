@@ -11,10 +11,10 @@ JOBS=(
     # /ptmp/dduka/work/training_metadata/avion/DUAL_ENCODER_QWEN_REF_VITL14/checkpoint_best.pt
     # /ptmp/dduka/work/training_metadata/avion/DUAL_ENCODER_EGO4D_VITL14_/checkpoint_best.pt
     # /ptmp/dduka/work/training_metadata/avion/DUAL_ENCODER_QWEN_REFERENCE_VITL14_/checkpoint_best.pt
-    afterok:27808637,/ptmp/dduka/work/training_metadata/avion/DUAL_ENCODER_SFT-EGO4D-TIMELENS-8FPS-UNION/checkpoint_best.pt
-    afterok:27808634,/ptmp/dduka/work/training_metadata/avion/DUAL_ENCODER_SFT-EGO4D-TIMELENS-8FPS-UNION_VITL14/checkpoint_best.pt 
-    afterok:27808654,/ptmp/dduka/work/training_metadata/avion/LAVILA_PRETRAIN_SFT-EGO4D-TIMELENS-8FPS-UNION/checkpoint_best.pt
-    afterok:27808648,/ptmp/dduka/work/training_metadata/avion/LAVILA_PRETRAIN_SFT-EGO4D-TIMELENS-8FPS-UNION_VITL14/checkpoint_besst.pt
+    afterok:27815993,/ptmp/dduka/work/training_metadata/avion/DUAL_ENCODER_LAVITI/checkpoint_best.pt
+    afterok:27819393,/ptmp/dduka/work/training_metadata/avion/DUAL_ENCODER_LAVITI_VITL/checkpoint_best.pt
+    afterok:27818941,/ptmp/dduka/work/training_metadata/avion/DUAL_ENCODER_MIDPOINT_EXTENSION/checkpoint_best.pt
+    afterok:27819392,/ptmp/dduka/work/training_metadata/avion/DUAL_ENCODER_MIDPOINT_EXTENSION_VITL/checkpoint_best.pt
 )
 
 for ENTRY in "${JOBS[@]}"; do
