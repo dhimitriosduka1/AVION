@@ -1,16 +1,6 @@
 #!/bin/bash
 
 JOBS=(
-    # afterany:27681703,/ptmp/dduka/work/training_metadata/avion/LAVILA_PRETRAIN_BASELINE/checkpoint_best.pt
-    # afterany:27681704,/ptmp/dduka/work/training_metadata/avion/LAVILA_PRETRAIN_ZSH_QWEN_REFINED/checkpoint_best.pt
-    # /ptmp/dduka/work/training_metadata/avion/LAVILA_PRETRAIN_BASELINE_VITL14/checkpoint_best.pt
-    # afterany:27681734,/ptmp/dduka/work/training_metadata/avion/LAVILA_PRETRAIN_ZSH_QWEN_REFINED_VITL14/checkpoint_best.pt
-    # /ptmp/dduka/work/training_metadata/avion/DUAL_ENCODER_EGO4D/checkpoint_best.pt
-    # /ptmp/dduka/work/training_metadata/avion/DUAL_ENCODER_QWEN_REFINED/checkpoint_best.pt
-    # /ptmp/dduka/work/training_metadata/avion/DUAL_ENCODER_E4D_VITL14/checkpoint_best.pt
-    # /ptmp/dduka/work/training_metadata/avion/DUAL_ENCODER_QWEN_REF_VITL14/checkpoint_best.pt
-    # /ptmp/dduka/work/training_metadata/avion/DUAL_ENCODER_EGO4D_VITL14_/checkpoint_best.pt
-    # /ptmp/dduka/work/training_metadata/avion/DUAL_ENCODER_QWEN_REFERENCE_VITL14_/checkpoint_best.pt
     afterok:27808637,/ptmp/dduka/work/training_metadata/avion/DUAL_ENCODER_SFT-EGO4D-TIMELENS-8FPS-UNION/checkpoint_best.pt
     afterok:27808634,/ptmp/dduka/work/training_metadata/avion/DUAL_ENCODER_SFT-EGO4D-TIMELENS-8FPS-UNION_VITL14/checkpoint_best.pt 
     afterok:27808654,/ptmp/dduka/work/training_metadata/avion/LAVILA_PRETRAIN_SFT-EGO4D-TIMELENS-8FPS-UNION/checkpoint_best.pt
@@ -41,8 +31,8 @@ for ENTRY in "${JOBS[@]}"; do
     fi
 
     DIR_NAME=$(basename "$CKPT_DIR")
-    RUN_NAME="EK100_CLS_${DIR_NAME^^}"
-    JOB_NAME="ek100_cls_${DIR_NAME}"
+    RUN_NAME="EK100_MIR_${DIR_NAME^^}"
+    JOB_NAME="ek100_mir_${DIR_NAME}"
 
     if [[ "${DIR_NAME,,}" == *vitl* ]]; then
         NODES=4
@@ -84,9 +74,19 @@ eval "\$(micromamba shell hook --shell bash)"
 micromamba activate avion
 
 export LD_PRELOAD="/raven/u/system/soft/SLE_15/packages/x86_64/gcc/14.1.0/bin/../lib/gcc/x86_64-pc-linux-gnu/14.1.0/../../../../lib64/libstdc++.so.6"
-export EK100_TRAIN="/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/EPIC_100_train.csv"
-export EK100_VAL="/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/EPIC_100_validation.csv"
+export EK100_TRAIN="/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/retrieval_annotations/EPIC_100_retrieval_train.csv"
+export EK100_VAL="/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/retrieval_annotations/EPIC_100_retrieval_test.csv"
 export EK100_VIDEO_DIR="/ptmp/dduka/databases/EK100/video_320p_15sec/"
+export RELEVANCY_PATH="/ptmp/dduka/databases/EK100/epic-kitchens-100-annotations/retrieval_annotations/relevancy/caption_relevancy_EPIC_100_retrieval_test.pkl"
+
+export EGTEA_DATA_DIR="/ptmp/dduka/databases/EGTEA/cropped_clips"
+export EGTEA_META_DIR="/ptmp/dduka/databases/EGTEA/test_split1.txt"
+
+export CHARADES_DATA_DIR="/ptmp/dduka/databases/charades_ego/CharadesEgo_v1_480"
+export CHARADES_META_DIR="/ptmp/dduka/databases/charades_ego/CharadesEgo_v1_480/CharadesEgo/CharadesEgo_v1_test_only1st.csv"
+
+export EGO4D_MCQ_DATA_DIR="/ptmp/dduka/databases/ego4d/video_320px_15sec/"
+export EGO4D_MCQ_META_DIR="/ptmp/dduka/databases/ego4d/egovlp2/egomcq.json"
 
 export MASTER_PORT=\$((12000 + \$RANDOM % 20000))
 export MASTER_ADDR=\$(scontrol show hostnames "\$SLURM_JOB_NODELIST" | head -n 1)
@@ -111,10 +111,11 @@ srun --cpu_bind=v --accel-bind=gn torchrun \\
     --node_rank=\$SLURM_NODEID \\
     --rdzv_endpoint=\$MASTER_ADDR:\$MASTER_PORT \\
     --rdzv_backend=c10d \\
-    scripts/main_lavila_finetune_cls.py \\
+    scripts/main_lavila_finetune_mir.py \\
     --root \$EK100_VIDEO_DIR \\
     --train-metadata \$EK100_TRAIN \\
     --val-metadata \$EK100_VAL \\
+    --relevancy-path \$RELEVANCY_PATH \\
     --video-chunk-length 15 \\
     --use-flash-attn \\
     --grad-checkpointing \\
@@ -131,4 +132,3 @@ EOF
 
     echo "------------------------------------------------------"
 done
-
